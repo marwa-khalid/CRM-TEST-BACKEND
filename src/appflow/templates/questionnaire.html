@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Witness Statement of Truth</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 0.5in;
+        }
+
+        body {
+            font-family: 'Inter';
+            line-height: 1.5;
+            color: #000;
+            margin: 0;
+            padding: 0;
+            background-color: #fff;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 8in;
+            margin: 0 auto;
+            padding: 0 10px;
+        }
+
+        .document-header {
+            text-align: center;
+            margin-bottom: 24px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid #1a3c6e;
+        }
+
+        .document-header h2 {
+            font-size: 20px;
+            margin: 0;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: #000;
+            letter-spacing: 1px;
+        }
+
+        .reference {
+            font-size: 12pt;
+            margin: 12px 0 24px;
+            text-align: right;
+            color: black;
+                    }
+
+        section {
+            margin-bottom: 28px;
+        }
+
+        .section-title {
+            font-size: 15pt;
+            font-weight: 700;
+            margin-bottom: 14px;
+            color: #000;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 6px;
+        }
+
+        table.personal-info {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 24px;
+        }
+
+        table.personal-info td {
+            padding: 8px 6px;
+            vertical-align: top;
+            border-bottom: 1px solid #eee;
+        }
+
+        table.personal-info .label {
+            font-weight: 700;
+            width: 28%;
+            color: #444;
+            padding-right: 10px;
+        }
+
+        .question {
+            margin-bottom: 24px;
+            page-break-inside: avoid;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: background-color 0.2s ease;
+        }
+
+        .question:hover {
+            background-color: #f9f9f9;
+        }
+
+        .question-text {
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #333;
+            font-size: 13pt;
+        }
+
+        .answer-lines {
+            margin-left: 18px;
+            line-height: 2.2;
+            color: #000;
+        }
+
+        .answer-lines span {
+            display: block;
+            border-bottom: 1px solid #000;
+            height: 20px;
+            margin-bottom: 8px;
+        }
+
+        .sketch-area {
+            margin-top: 20px;
+            border: 1px solid #000;
+            height: 200px !important; /* force larger height */
+            width: 100%;
+            background: #fff;
+            border-radius: 4px;
+        }
+
+        .signature-area {
+            margin-top: 40px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .signature-box {
+            flex: 1 1 30%;
+            min-width: 180px;
+            vertical-align: top;
+            page-break-inside: avoid;
+        }
+
+        .signature-line {
+            border-bottom: 1px solid #000;
+            padding: 28px 0 6px 0;
+            margin-bottom: 6px;
+        }
+
+        .signature-box strong {
+            font-weight: 700;
+            font-size: 12pt;
+        }
+
+        @media print {
+            .answer-lines span {
+                height: 16px;
+            }
+
+            .sketch-area {
+                height: 250px;
+            }
+
+            .signature-area {
+                gap: 10px;
+            }
+
+            .signature-box {
+                min-width: auto;
+                flex: 1 1 30%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <br><br>
+        <header class="document-header" role="heading" aria-level="2">
+            <h2>WITNESS STATEMENT OF TRUTH</h2>
+        </header>
+
+        <div class="reference" aria-label="Reference Number">
+            <p class="date"> <strong>Date:</strong>{{date}}</p>
+            <strong>Our Ref:</strong> {{reference}}
+        </div>
+
+        <section aria-labelledby="proof-evidence-title">
+            <h3 id="proof-evidence-title" class="section-title">PROOF OF EVIDENCE QUESTIONNAIRE</h3>
+
+            <table class="personal-info" role="table" aria-describedby="personal-info-desc">
+                <tbody>
+                    <tr>
+                        <td class="label">Name:</td>
+                        <td>{{name}}</td>
+                    </tr>
+                    <tr>
+                        <td class="label">Address:</td>
+                        <td>{{address}}</td>
+                    </tr>
+                    <tr>
+                        <td class="label">Date of Birth:</td>
+                        <td>{{dob}}</td>
+                    </tr>
+                    <tr>
+                        <td class="label">Occupation:</td>
+                        <td>{{occupation}}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section aria-label="Questionnaire">
+            <!-- Questions with blank lines -->
+            <div class="question">
+                <div class="question-text">1. Did you actually see the accident?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">2. Where were you at the time, and how near to the scene of the accident?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">3. What were the weather conditions?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">4. What were the road conditions?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">5. Please describe the vehicles and drivers involved</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">6. Did you hear or see either driver give any warning?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">7. What lights were displayed on the vehicle?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">8. At what speed would you estimate the vehicles involved to have been travelling?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">9. Was there anything to obstruct the view of any driver involved?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">10. Did any driver involved apply his brakes, swerve or skid?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">11. How far did each vehicle travel after impact?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">12. Could any of the drivers involved do anything to avoid collision?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">13. In your opinion, who was to blame for the accident?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">14. Was any driver involved known to you – if so, please give details</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">15. Did you give a statement to the police?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">16. Please give the names and addresses of any other witnesses to the accident</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">17. Where can you be interviewed if required?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">18. Was there any conversation between any of the parties involved following the accident regarding who was at fault?</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">19. Please give a full description of the accident:</div>
+                <div class="answer-lines">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="question">
+                <div class="question-text">20. Sketch Plan of the Accident:</div>
+                <div class="sketch-area" aria-label="Sketch plan area"></div>
+            </div>
+        </section>
+
+        <section aria-label="Declaration">
+            <p>I believe that the facts stated in this witness statement are true.</p>
+
+            <div class="signature-area">
+                <div class="signature-box" style="flex: 1 1 100%; margin-bottom: 20px;">
+                    <label><strong>E-Signatures</strong></label>
+                    <div class="signature-line" style="height:100px; border:1px solid #ccc; border-radius:6px; margin-top:8px; position:relative;">
+                        <!-- Signature pad area -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="signature-area" style="justify-content: flex-start;">
+                <div class="signature-box" style="flex: 1; max-width: 45%; margin-right: 20px;">
+                    <label for="print-name"><strong>Witness Name</strong></label>
+                    <input type="text" id="print-name"
+                           style="width:100%; padding:8px; border:1px solid #ccc; border-radius:6px; margin-top:6px;">
+                </div>
+
+                <div class="signature-box" style="flex: 1; max-width: 45%; margin-right: 20px;">
+                    <label for="dated"><strong>Dated</strong></label>
+                    <input type="text" id="dated"
+                           style="width:100%; padding:8px; border:1px solid #ccc; border-radius:6px; margin-top:6px;">
+                </div>
+            </div>
+        </section>
+    </div>
+</body>
+</html>
