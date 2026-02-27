@@ -6,7 +6,16 @@ authors = ["Talha Mobin <talhamobin313@gmail.com>"]
 readme = "README.md"
 package-mode = false
 
+[project]
+name = "my-fastapi-app"
+version = "0.1.0"
+dependencies = [
+    "fastapi",
+]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 [tool.poetry.dependencies]
 python = "^3.11"
 pydantic = {extras = ["email"], version = "^2.11.7"}
