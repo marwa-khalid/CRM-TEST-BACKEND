@@ -219,7 +219,7 @@ def close_claim(db: Session, claim_id: int, reason: str) -> Claim:
 
     claim.file_closed_reason = reason.strip()
     claim.file_closed_at = datetime.now(timezone.utc)
-    claim.is_locked = True
+    # claim.is_locked = True
 
     db.commit()
     db.refresh(claim)
@@ -252,27 +252,93 @@ def close_claim(db: Session, claim_id: int, reason: str) -> Claim:
 #     #claim.labels = _labels_bundle(claim)  # type: ignore[attr-defined]
 #     return claim
 
-def notify_manager(db: Session, claim_id: int, background_tasks: BackgroundTasks) -> Claim:
+def notify_manager(db: Session, claim_id: int,recipient:str, background_tasks: BackgroundTasks) -> Claim:
     claim = db.get(Claim, claim_id)
     # ... (Your existing validation logic) ...
 
     # Pull list from your system settings
-    recipients = ["marwakhalid558@gmail.com"]
-    formatted_now = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    recipients = [recipient]
+    formatted_now = datetime.now().strftime("%d-%m-%y")
     subject = "Notification of Vulnerable Person"
-    
-    # The Template from your image
-    html_body = f"""
-    <div style="font-family: sans-serif; color: #333;">
-        <h3>Notification of Vulnerable Person</h3>
-        <p><strong>Case No:</strong> {claim.id}</p>
-        <p><strong>Date:</strong> {formatted_now}</p>
-        <p>Please note the above client has been identified as a <strong>vulnerable person</strong>. 
-         <br>
-        Kindly review the case and advise if any additional actions or support are required.</p>
-    </div>
-    """
+    year_month = datetime.now().strftime("%Y%m")
 
+     # 2. Your case number
+    # 3. Combine with 4-digit padding
+    case_id = f"{year_month}-{claim.id:04d}"
+    # The Template from your image
+    # Note: If possible, swap this .svg for a .png URL for better compatibility
+    logo_url = "https://image2url.com/r2/default/images/1772144213817-5641d8a2-de81-4933-b96d-838f8644d636.svg"
+
+    html_body = f"""
+    <html>
+    <body style="margin: 0; padding: 0; background-color: #ffffff; font-family: Arial, sans-serif;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff;">
+            <tr>
+                <td align="center" style="padding: 40px 20px;">
+                    
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom: 24px;">
+                        <tr>
+                            <td align="center">
+                                <img src="{logo_url}" alt="Nationwide Assist" width="200" style="display: block; border: 0; outline: none; text-decoration: none;">
+                            </td>
+                        </tr>
+                    </table>
+
+                    <table width="100%" border="0" cellspacing="0" cellpadding="16" style="max-width: 380px; border: 1px solid #CCCCCC; border-radius: 8px; background-color: #ffffff;">
+                        <tr>
+                            <td>
+                                <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                    <tr>
+                                        <td width="136" style="color: #444444; font-size: 12px; font-weight: 400;">Case No:</td>
+                                        <td style="color: #444444; font-size: 12px; font-weight: 600;">{case_id}</td>
+                                    </tr>
+                                    <tr><td colspan="2" style="height: 8px;"></td></tr>
+                                    <tr><td colspan="2" style="height: 1px; background-color: #CCCCCC;"></td></tr>
+                                    <tr><td colspan="2" style="height: 8px;"></td></tr>
+                                    <tr>
+                                        <td width="136" style="color: #444444; font-size: 12px; font-weight: 400;">Client Name:</td>
+                                        <td style="color: #444444; font-size: 12px; font-weight: 600;">{claim.client_name if hasattr(claim, 'client_name') else 'N/A'}</td>
+                                    </tr>
+                                    <tr><td colspan="2" style="height: 8px;"></td></tr>
+                                    <tr><td colspan="2" style="height: 1px; background-color: #CCCCCC;"></td></tr>
+                                    <tr><td colspan="2" style="height: 8px;"></td></tr>
+                                    <tr>
+                                        <td width="136" style="color: #444444; font-size: 12px; font-weight: 400;">Date:</td>
+                                        <td style="color: #444444; font-size: 12px; font-weight: 600;">{formatted_now}</td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 345px; margin-top: 24px;">
+                        <tr>
+                            <td align="center" style="color: #444444; font-size: 14px; font-weight: 400; line-height: 1.5;">
+                                Please note the above client has been identified as a vulnerable person.<br/>
+                                Kindly review the case and advise if any additional actions or support are required.
+                            </td>
+                        </tr>
+                    </table>
+
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 580px; margin-top: 40px; margin-bottom: 24px;">
+                        <tr><td style="height: 1px; background-color: #CCCCCC;"></td></tr>
+                    </table>
+
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                        <tr>
+                            <td align="center" style="color: #444444;">
+                                <span style="font-size: 12px; font-weight: 600;">Kind regards,</span><br/>
+                                <span style="font-size: 14px; font-weight: 600; display: inline-block; margin-top: 4px;">Nationwide Assist IT / Systems Team</span>
+                            </td>
+                        </tr>
+                    </table>
+
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
     # Trigger via SendGrid in the background
     background_tasks.add_task(_send_email, recipients, subject, html_body)
 
@@ -281,6 +347,7 @@ def notify_manager(db: Session, claim_id: int, background_tasks: BackgroundTasks
     db.commit()
     db.refresh(claim)
     return claim
+
 def deactivate_claim_service(claim_id: int, request: Request, db: Session):
     tenant_id = get_tenant_id(request)
 

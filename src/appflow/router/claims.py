@@ -66,11 +66,12 @@ def deactivate_claim(claim_id: int, request: Request, db: Session = Depends(get_
 #     claim = notify_manager(db, claim_id, payload.note)
 #     return ClaimOut(**claim.__dict__, labels=getattr(claim, "labels", None))  # type: ignore
 
-@claims_router.post("/{claim_id}/notify-manager", response_model=ClaimOut)
+@claims_router.post("/{claim_id}/notify-manager/{email}", response_model=ClaimOut)
 def notify_manager_route(
     claim_id: int, 
+    email:str,
     background_tasks: BackgroundTasks, # Added this
     db: Session = Depends(get_session)
 ):
-    claim = notify_manager(db, claim_id, background_tasks)
+    claim = notify_manager(db, claim_id,email, background_tasks)
     return ClaimOut(**claim.__dict__, labels=getattr(claim, "labels", None))

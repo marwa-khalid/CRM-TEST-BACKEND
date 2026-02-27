@@ -246,19 +246,109 @@ def send_witness_email(
         if not claim:
             raise HTTPException(status_code=404, detail="Claim not found")
 
-        year = claim.file_opened_at.strftime("%Y")
-        month = claim.file_opened_at.strftime("%m")
-        padded_id = str(claim.id).zfill(5)
-        case_reference = f"{claim.client_surname}-{year}{month}-{padded_id}"
+        year_month = datetime.now().strftime("%Y%m")
+        case_reference = f"{client.surname}-{year_month}-{claim.id:04d}"
+        # Format: 02-12-26 / 5:35 PM
+        submission_time = datetime.now().strftime("%d-%m-%y / %I:%M %p")
 
+        # Case Reference: 202602-0015
+
+        logo_url = "https://image2url.com/r2/default/images/1772144213817-5641d8a2-de81-4933-b96d-838f8644d636.svg"
+        # Note: Swap for a PNG for better email compatibility if possible.
         message = Mail(
             from_email="No-Reply <noreplynationwideassist@yopmail.com",
             to_emails=data.witness_email,
             subject=f"Witness Questionnaire - Case Ref: {case_reference}",
             html_content=f"""
-                                        Dear {data.witness_name},<br><br>
-                                        Please find attached the questionnaire and letter.<br><br>
-                                        Regards,<br>Nationwide Assist Team
+                                        <html>
+<body style="margin: 0; padding: 0; background-color: #ffffff; font-family: Arial, sans-serif;">
+    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff;">
+        <tr>
+            <td align="center" style="padding: 40px 20px;">
+                
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom: 30px;">
+                    <tr>
+                        <td align="center">
+                            <img src="{logo_url}" alt="Nationwide Assist" width="200" style="display: block; border: 0;">
+                        </td>
+                    </tr>
+                </table>
+
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 600px; margin-bottom: 16px;">
+                    <tr>
+                        <td align="center" style="font-size: 16px; font-weight: 600; color: #000000;">
+                            Dear {data.witness_name}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td align="center" style="padding-top: 12px; font-size: 14px; font-weight: 400; color: #444444; line-height: 1.5;">
+                            A new witness form has been successfully submitted online.<br/>
+                            Please find the details below:
+                        </td>
+                    </tr>
+                </table>
+
+                <table width="100%" border="0" cellspacing="0" cellpadding="16" style="max-width: 420px; border: 1px solid #CCCCCC; border-radius: 8px; background-color: #ffffff;">
+                    <tr>
+                        <td>
+                            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                                <tr>
+                                    <td width="160" style="color: #444444; font-size: 12px; font-weight: 400;">Case Reference:</td>
+                                    <td style="color: #444444; font-size: 12px; font-weight: 600;">{case_reference}</td>
+                                </tr>
+                                <tr><td colspan="2" style="padding: 8px 0;"><div style="height: 1px; background-color: #CCCCCC;"></div></td></tr>
+                                
+                                <tr>
+                                    <td width="160" style="color: #444444; font-size: 12px; font-weight: 400;">Witness Name</td>
+                                    <td style="color: #444444; font-size: 12px; font-weight: 600;">{data.witness_name}</td>
+                                </tr>
+                                <tr><td colspan="2" style="padding: 8px 0;"><div style="height: 1px; background-color: #CCCCCC;"></div></td></tr>
+                                
+                                <tr>
+                                    <td width="160" style="color: #444444; font-size: 12px; font-weight: 400;">Submission Date/Time</td>
+                                    <td style="color: #444444; font-size: 12px; font-weight: 600;">{submission_time}</td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 380px; margin-top: 30px;">
+                    <tr>
+                        <td align="center" style="padding-bottom: 20px; font-size: 14px; color: #444444;">
+                            You can view the full witness form, download it, or print it using the link below:
+                        </td>
+                    </tr>
+                    <tr>
+                        <td align="center">
+                            <table border="0" cellspacing="0" cellpadding="0">
+                                <tr>
+                                    <td align="center" bgcolor="#0352FD" style="border-radius: 4px;">
+                                        <a href="" target="_blank" style="padding: 16px 40px; font-size: 16px; font-weight: 500; color: #ffffff; text-decoration: none; display: inline-block;">
+                                            View Witness Form
+                                        </a>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 580px; margin-top: 40px;">
+                    <tr><td style="height: 1px; background-color: #CCCCCC;"></td></tr>
+                    <tr>
+                        <td align="center" style="padding-top: 24px; color: #444444;">
+                            <span style="font-size: 12px; font-weight: 600;">Kind regards,</span><br/>
+                            <span style="font-size: 14px; font-weight: 600; display: inline-block; margin-top: 4px;">Nationwide Assist IT / Systems Team</span>
+                        </td>
+                    </tr>
+                </table>
+
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
                                     """)
         message.attachment = [
             Attachment(
