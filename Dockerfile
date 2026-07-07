@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+ENV PYTHONPATH=/app/src
 
 # System deps required by OpenCV / EasyOCR / WeasyPrint
 RUN apt-get update && apt-get install -y \
@@ -14,6 +15,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN mkdir -p uploads
 
 EXPOSE 8000
 
