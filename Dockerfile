@@ -2,6 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 ENV PYTHONPATH=/app/src
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
 # System deps required by OpenCV / EasyOCR / WeasyPrint
 RUN apt-get update && apt-get install -y \

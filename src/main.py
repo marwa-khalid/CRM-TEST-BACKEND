@@ -30,6 +30,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/healthz", include_in_schema=False)
+def healthcheck():
+    return {"status": "ok"}
+
 app.include_router(root_router)
 app.include_router(authentication.router)
 app.include_router(version_router)

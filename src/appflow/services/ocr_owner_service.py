@@ -2,7 +2,6 @@
 import os
 import re
 import urllib.parse
-import easyocr
 from PIL import Image
 import numpy as np
 from io import BytesIO
@@ -13,7 +12,18 @@ from libdata.models.tables import HistoryActivities, Claim
 from sqlalchemy.orm import Session
 
 
-reader = easyocr.Reader(['en'])
+_easyocr_reader = None
+
+
+def get_easyocr_reader():
+    """Initialise EasyOCR only when an owner OCR upload actually needs it."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+        _easyocr_reader = easyocr.Reader(["en"])
+    return _easyocr_reader
+
+
 UPLOAD_DIR = "uploads"
 
 if not os.path.exists(UPLOAD_DIR):
@@ -41,13 +51,13 @@ def extract_text_from_owner_file(file_path: str) -> str:
             page.save(img, format="PNG")
             img.seek(0)
             img_np = np.array(Image.open(img))
-            ocr_result = reader.readtext(img_np)
+            ocr_result = get_easyocr_reader().readtext(img_np)
             for _, txt, _ in ocr_result:
                 text += txt + "\n"
 
     elif file_ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"]:
         img_np = np.array(Image.open(file_path))
-        ocr_result = reader.readtext(img_np)
+        ocr_result = get_easyocr_reader().readtext(img_np)
         for _, txt, _ in ocr_result:
             text += txt + "\n"
 

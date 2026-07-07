@@ -1,7 +1,6 @@
 import os
 import urllib.parse
 import re
-import easyocr
 from PIL import Image
 import numpy as np
 from io import BytesIO
@@ -12,8 +11,16 @@ from libdata.models.tables import HistoryActivities, Claim
 
 
 
-# EasyOCR reader initialization
-reader = easyocr.Reader(['en'])
+_easyocr_reader = None
+
+
+def get_easyocr_reader():
+    """Initialise EasyOCR only when an OCR endpoint actually needs it."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+        _easyocr_reader = easyocr.Reader(["en"])
+    return _easyocr_reader
 
 UPLOAD_DIR = "uploads"  # Directory to store uploaded files
 
@@ -64,7 +71,7 @@ def extract_text_from_file(file_path: str):
             img_np = np.array(img_pil)
 
             # Use EasyOCR to extract text from the image
-            ocr_result = reader.readtext(img_np)
+            ocr_result = get_easyocr_reader().readtext(img_np)
             for result in ocr_result:
                 text += result[1] + "\n"
 
@@ -75,7 +82,7 @@ def extract_text_from_file(file_path: str):
         img_np = np.array(img)
 
         # Use EasyOCR to extract text from the image
-        ocr_result = reader.readtext(img_np)
+        ocr_result = get_easyocr_reader().readtext(img_np)
         for result in ocr_result:
             text += result[1] + "\n"
 
