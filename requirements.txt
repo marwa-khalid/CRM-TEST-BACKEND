@@ -89,6 +89,7 @@ python-http-client==3.3.7
 python-multipart==0.0.22
 PyYAML==6.0.3
 requests==2.32.5
+reportlab==4.5.0
 rsa==4.9.1
 scikit-image==0.26.0
 scipy==1.17.1
