@@ -44,7 +44,7 @@
       font-size: 12pt;
       margin: 10px 0;
       text-align: right;
-      color: #black;
+      color: #000000;
     }
 
     .section {
@@ -64,6 +64,8 @@
     </div>
 
     <div class="reference">
+      <p style="margin:0 0 8px 0;"><strong>{{witness_name}}</strong></p>
+      {% if witness_address %}<p style="margin:0 0 12px 0; white-space:pre-line;">{{witness_address}}</p>{% endif %}
       <p class="date"> <strong>Date:</strong>{{date}}</p>
       <strong>Our Ref:</strong> {{reference}}
     </div>
@@ -72,9 +74,18 @@
     <p>Dear {{witness_name}},</p>
 
     <div class="section">
-      <p><strong>Our Client: </strong> {{name}}</p>
+      <p><strong>Our Client: </strong> {{client_name}}</p>
       <p><strong>Incident Date:</strong> {{ accident_time }}</p>
       <p><strong>Incident Location:</strong>  {{ accident_location }}</p>
+      {% if location_map_url %}
+      <div style="text-align:center; margin-top:8px;">
+        <img
+          src="{{ location_map_url }}"
+          alt="Map of the incident location"
+          style="width:100%; max-width:300px; height:auto; border:1px solid #d0d0d0; border-radius:6px; display:inline-block;"
+        />
+      </div>
+      {% endif %}
     </div>
 
     <div class="section">

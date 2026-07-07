@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: crm-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /
+    envVars:
+      # Database — paste your hosted Postgres connection string in the dashboard
+      - key: DATABASE_URL
+        sync: false
+      # Email (SendGrid)
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_SENDER
+        sync: false
+      # AWS S3 (document storage)
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_DEFAULT_REGION
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_S3_BUCKET_NAME
+        sync: false
+      # Cloudinary
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      # Gmail / Outlook integrations
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false
+      - key: OUTLOOK_ACCESS_TOKEN
+        sync: false
+      # Frontend URLs (used for email deep-links / CORS-friendly links)
+      - key: FRONTEND_URL
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false

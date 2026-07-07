@@ -2,10 +2,13 @@
 from typing import Type, List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 from fastapi import HTTPException, status
 
 from libdata.models.tables import (
-    ClaimType, Handler, TargetDebt, CaseStatus, SourceChannel, Prospect, PresentFilePosition, Language, FuelType, Transmission, TaxiType
+    ClaimType, Handler, TargetDebt, CaseStatus, SourceChannel, Prospect, PresentFilePosition, Language, FuelType, Transmission, TaxiType,
+    SalvageCategory,KeepingSalvage,PavAgreed,RetainingSalvage,PolicyType,CoverLevel,ReasonMid,LiabilityStance,SettlementStatus,VehicleStatus,
+    ClientVehicleCategory,ActualVehicleCategory,AdminFeeType,HireVehicleStatus
 )
 
 # Simple action labels for audit trail
@@ -26,9 +29,23 @@ ENTITY_NAME = {
     FuelType: "FUEL_TYPE",
     Transmission: "TRANSMISSION",
     TaxiType: "TAXI_TYPE",
+    SalvageCategory: "SALVAGE_CATEGORY",
+    KeepingSalvage: "KEEPING_SALVAGE",
+    PavAgreed: "PAV_AGREED",
+    RetainingSalvage: "RETAINING_SALVAGE",
+    PolicyType: "POLICY_TYPE",
+    CoverLevel: "COVER_LEVEL",
+    ReasonMid: "Reason_Mid",
+    LiabilityStance: "Liability_Stance",
+    SettlementStatus: "Settlement_Status",
+    VehicleStatus: "Vehicle_Status",
+    ClientVehicleCategory: "Client_Vehicle_Category",
+    ActualVehicleCategory: "Actual_Vehicle_Category",
+    AdminFeeType: "Admin_Fee_Type",
+    HireVehicleStatus: "Hire_Vehicle_Status"
 }
 
-LookupModels = (ClaimType, Handler, TargetDebt, CaseStatus, SourceChannel, Prospect, PresentFilePosition, Language, FuelType, Transmission, TaxiType)
+LookupModels = (ClaimType, Handler, TargetDebt, CaseStatus, SourceChannel, Prospect, PresentFilePosition, Language, FuelType, Transmission, TaxiType, SalvageCategory,KeepingSalvage,PavAgreed,RetainingSalvage,PolicyType,CoverLevel,ReasonMid,LiabilityStance,SettlementStatus,VehicleStatus,ClientVehicleCategory,ActualVehicleCategory,AdminFeeType,HireVehicleStatus)
 
 
 # def _audit(db: Session, admin_user_id: Optional[int], model: Type, entity_id: int, action: str, details: Dict[str, Any]):
@@ -41,9 +58,10 @@ LookupModels = (ClaimType, Handler, TargetDebt, CaseStatus, SourceChannel, Prosp
 #     ))
 
 def _list_active(db: Session, model: Type) -> List:
+    # Dropdowns are shown alphabetically by label across all screens.
     return (db.query(model)
             .filter(model.is_active == True)  # noqa: E712
-            .order_by(model.sort_order, model.label)
+            .order_by(func.lower(model.label))
             .all())
 
 
@@ -131,6 +149,32 @@ def list_transmissions(db: Session): return _list_active(db, Transmission)
 
 def list_taxi_types(db: Session): return  _list_active(db, TaxiType)
 
+def list_salvage_categories(db: Session): return  _list_active(db, SalvageCategory)
+
+def list_keeping_salvages(db: Session): return  _list_active(db, KeepingSalvage)
+
+def list_pav_agrees(db: Session): return  _list_active(db, PavAgreed)
+
+def list_retaining_salvages(db: Session): return  _list_active(db, RetainingSalvage)
+
+def list_policy_types(db: Session): return _list_active(db, PolicyType)
+
+def list_cover_levels(db: Session): return _list_active(db, CoverLevel)
+
+def list_mid_reasons(db: Session): return  _list_active(db, ReasonMid)
+
+def list_liability_stances(db: Session): return _list_active(db, LiabilityStance)
+
+def list_settlement_statuses(db: Session): return _list_active(db, SettlementStatus)
+def list_vehicle_statuses(db: Session): return _list_active(db, VehicleStatus)
+
+def list_client_vehicle_categories(db: Session): return _list_active(db, ClientVehicleCategory)
+
+def list_actual_vehicle_categories(db: Session): return _list_active(db, ActualVehicleCategory)
+
+def list_admin_fee_types(db: Session): return _list_active(db, AdminFeeType)
+
+def list_hire_vehicle_statuses(db: Session): return _list_active(db, HireVehicleStatus)
 # --------- Admin list helpers -----------------
 def listall_claim_types(db: Session): return _list_all(db, ClaimType)
 
@@ -161,6 +205,32 @@ def listall_transmissions(db: Session): return _list_all(db, Transmission)
 
 def listall_taxi_types(db: Session): return _list_all(db, TaxiType)
 
+def listall_salvage_categories(db: Session): return _list_all(db, SalvageCategory)
+
+def listall_keeping_salvages(db: Session): return _list_all(db, KeepingSalvage)
+
+def listall_pav_agrees(db: Session): return _list_all(db, PavAgreed)
+
+def listall_retaining_salvages(db: Session): return _list_all(db, RetainingSalvage)
+
+def listall_policy_types(db: Session): return _list_all(db, PolicyType)
+
+def listall_cover_levels(db: Session): return _list_all(db, CoverLevel)
+
+def listall_mid_reasons(db: Session): return _list_all(db, ReasonMid)
+
+def listall_liability_stances(db: Session): return _list_all(db, LiabilityStance)
+
+def listall_settlement_statuses(db: Session): return _list_all(db, SettlementStatus)
+def listall_vehicle_statuses(db: Session): return _list_all(db, VehicleStatus)
+
+def listall_client_vehicle_categories(db: Session): return _list_all(db, ClientVehicleCategory)
+
+def listall_actual_vehicle_categories(db: Session): return _list_all(db, ActualVehicleCategory)
+
+def listall_admin_fee_types(db: Session): return _list_all(db, AdminFeeType)
+
+def listall_hire_vehicle_statuses(db: Session): return _list_all(db, HireVehicleStatus)
 # --------- Admin CRUD -------------------------
 def create_claim_type(db, data, admin_id): return _create(db, ClaimType, data, admin_id)
 
@@ -259,3 +329,122 @@ def update_taxi_type(db, pk, data, admin_id): return _update(db, TaxiType, pk, d
 
 
 def deactivate_taxi_type(db, pk, admin_id): return _deactivate(db, TaxiType, pk, admin_id)
+
+
+def create_salvage_category(db, data, admin_id): return _create(db, SalvageCategory, data, admin_id)
+
+
+def update_salvage_category(db, pk, data, admin_id): return _update(db, SalvageCategory, pk, data, admin_id)
+
+
+def deactivate_salvage_category(db, pk, admin_id): return _deactivate(db, SalvageCategory, pk, admin_id)
+
+
+def create_keeping_salvage(db, data, admin_id): return _create(db, KeepingSalvage, data, admin_id)
+
+
+def update_keeping_salvage(db, pk, data, admin_id): return _update(db, KeepingSalvage, pk, data, admin_id)
+
+
+def deactivate_keeping_salvage(db, pk, admin_id): return _deactivate(db, KeepingSalvage, pk, admin_id)
+
+
+def create_pav_agree(db, data, admin_id): return _create(db, PavAgreed, data, admin_id)
+
+
+def update_pav_agree(db, pk, data, admin_id): return _update(db, PavAgreed, pk, data, admin_id)
+
+
+def deactivate_pav_agree(db, pk, admin_id): return _deactivate(db, PavAgreed, pk, admin_id)
+
+
+def create_retaining_salvage(db, data, admin_id): return _create(db, RetainingSalvage, data, admin_id)
+
+
+def update_retaining_salvage(db, pk, data, admin_id): return _update(db, RetainingSalvage, pk, data, admin_id)
+
+
+def deactivate_retaining_salvage(db, pk, admin_id): return _deactivate(db, RetainingSalvage, pk, admin_id)
+
+
+def create_policy_type(db, data, admin_id): return _create(db, PolicyType, data, admin_id)
+
+
+def update_policy_type(db, pk, data, admin_id): return _update(db, PolicyType, pk, data, admin_id)
+
+
+def deactivate_policy_type(db, pk, admin_id): return _deactivate(db, PolicyType, pk, admin_id)
+
+
+def create_cover_level(db, data, admin_id): return _create(db, CoverLevel, data, admin_id)
+
+
+def update_cover_level(db, pk, data, admin_id): return _update(db, CoverLevel, pk, data, admin_id)
+
+
+def deactivate_cover_level(db, pk, admin_id): return _deactivate(db, CoverLevel, pk, admin_id)
+
+
+def create_mid_reason(db, data, admin_id): return _create(db, ReasonMid, data, admin_id)
+
+
+def update_mid_reason(db, pk, data, admin_id): return _update(db, ReasonMid, pk, data, admin_id)
+
+
+def deactivate_mid_reason(db, pk, admin_id): return _deactivate(db, ReasonMid, pk, admin_id)
+
+
+def create_liability_stance(db, data, admin_id): return _create(db, LiabilityStance, data, admin_id)
+
+
+def update_liability_stance(db, pk, data, admin_id): return _update(db, LiabilityStance, pk, data, admin_id)
+
+
+def deactivate_liability_stance(db, pk, admin_id): return _deactivate(db, LiabilityStance, pk, admin_id)
+
+
+def create_settlement_status(db, data, admin_id): return _create(db, SettlementStatus, data, admin_id)
+
+
+def update_settlement_status(db, pk, data, admin_id): return _update(db, SettlementStatus, pk, data, admin_id)
+
+
+def deactivate_settlement_status(db, pk, admin_id): return _deactivate(db, SettlementStatus, pk, admin_id)
+def create_vehicle_status(db, data, admin_id): return _create(db, VehicleStatus, data, admin_id)
+def update_vehicle_status(db, pk, data, admin_id): return _update(db, VehicleStatus, pk, data, admin_id)
+def deactivate_vehicle_status(db, pk, admin_id): return _deactivate(db, VehicleStatus, pk, admin_id)
+
+def create_client_vehicle_category(db, data, admin_id): return _create(db, ClientVehicleCategory, data, admin_id)
+
+
+def update_client_vehicle_category(db, pk, data, admin_id): return _update(db, ClientVehicleCategory, pk, data, admin_id)
+
+
+def deactivate_client_vehicle_category(db, pk, admin_id): return _deactivate(db, ClientVehicleCategory, pk, admin_id)
+
+
+def create_actual_vehicle_category(db, data, admin_id): return _create(db, ActualVehicleCategory, data, admin_id)
+
+
+def update_actual_vehicle_category(db, pk, data, admin_id): return _update(db, ActualVehicleCategory, pk, data, admin_id)
+
+
+def deactivate_actual_vehicle_category(db, pk, admin_id): return _deactivate(db, ActualVehicleCategory, pk, admin_id)
+
+
+def create_admin_fee_type(db, data, admin_id): return _create(db, AdminFeeType, data, admin_id)
+
+
+def update_admin_fee_type(db, pk, data, admin_id): return _update(db, AdminFeeType, pk, data, admin_id)
+
+
+def deactivate_admin_fee_type(db, pk, admin_id): return _deactivate(db, AdminFeeType, pk, admin_id)
+
+
+def create_hire_vehicle_status(db, data, admin_id): return _create(db, HireVehicleStatus, data, admin_id)
+
+
+def update_hire_vehicle_status(db, pk, data, admin_id): return _update(db, HireVehicleStatus, pk, data, admin_id)
+
+
+def deactivate_hire_vehicle_status(db, pk, admin_id): return _deactivate(db, HireVehicleStatus, pk, admin_id)

@@ -1,6 +1,7 @@
 # app/schemas/lookups.py
 from typing import Optional
 from pydantic import BaseModel, Field, PrivateAttr
+from decimal import Decimal
 
 # ---------- Base DTOs (shared shape) ----------
 class LookupBase(BaseModel):
@@ -52,3 +53,55 @@ class TransmissionOut(LookupOut):pass
 
 class TaxiTypeIn(LookupBase):pass
 class TaxiTypeOut(LookupOut):pass
+
+class SalvageCategoryIn(LookupBase):pass
+class SalvageCategoryOut(LookupOut):pass
+
+class KeepingSalvageIn(LookupBase):pass
+class KeepingSalvageOut(LookupOut):pass
+
+class PavAgreeIn(LookupBase):pass
+class PavAgreeOut(LookupOut):pass
+
+class RetainingSalvageIn(LookupBase):pass
+class RetainingSalvageOut(LookupOut):pass
+
+class PolicyTypeIn(LookupBase):pass
+class PolicyTypeOut(LookupOut):pass
+
+class CoverLevelIn(LookupBase):pass
+class CoverLevelOut(LookupOut):pass
+
+class ReasonMidIn(LookupBase):pass
+class ReasonMidOut(LookupOut):pass
+
+class LiabilityStanceIn(LookupBase):pass
+class LiabilityStanceOut(LookupOut):pass
+
+class SettlementStatusIn(LookupBase):pass
+class SettlementStatusOut(LookupOut):pass
+
+# Vehicle Status
+class VehicleStatusIn(LookupBase): pass
+class VehicleStatusOut(LookupOut): pass
+
+class ClientVehicleCategoryIn(LookupBase):pass
+class ClientVehicleCategoryOut(LookupOut):pass
+
+class ActualVehicleCategoryIn(LookupBase):
+    abi_rate: Decimal
+    bhr_rate: Decimal
+    fifty_fifty_rate: Optional[Decimal] = None
+    valet_rate: Decimal
+
+class ActualVehicleCategoryOut(LookupOut):
+    abi_rate: Decimal
+    bhr_rate: Decimal
+    fifty_fifty_rate: Optional[Decimal] = None
+    valet_rate: Decimal
+
+class AdminFeeTypeIn(LookupBase):pass
+class AdminFeeTypeOut(LookupOut):pass
+
+class HireVehicleStatusIn(LookupBase):pass
+class HireVehicleStatusOut(LookupOut):pass

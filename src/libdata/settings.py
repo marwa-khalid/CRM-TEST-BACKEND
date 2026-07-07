@@ -8,7 +8,21 @@ from pydantic_settings import  BaseSettings
 class Settings(BaseSettings):
     database_url: str = Field(
         env="DATABASE_URL",
-        default="postgresql://postgres:demo123@localhost:5432/claim-crm"
+        default="postgresql://postgres:demo123@localhost:5432/DBClaimCRM"
+    )
+    
+    # Cloudinary Configuration
+    cloudinary_cloud_name: str = Field(
+        env="CLOUDINARY_CLOUD_NAME",
+        default="dwdbsv8j8"
+    )
+    cloudinary_api_key: str = Field(
+        env="CLOUDINARY_API_KEY",
+        default="247181356229334"
+    )
+    cloudinary_api_secret: str = Field(
+        env="CLOUDINARY_API_SECRET",
+        default="kHEZYivWaxak7rid_WDD1FFSDWE"
     )
 
     def get_engine(self):

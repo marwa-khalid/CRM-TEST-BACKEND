@@ -1,17 +1,23 @@
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field,field_validator
 from appflow.models.address import ContactAddressIn,ContactAddressOut
 
 
 class PassengerBase(BaseModel):
-    gender: str
-    first_name: str = Field(..., max_length=100)
-    surname: str = Field(..., max_length=100)
+    gender: Optional[str] = None
+    first_name: Optional[str] = None #Field(..., max_length=100)
+    surname: Optional[str] = None #Field(..., max_length=100)
 
 
 class PassengerIn(PassengerBase):
     claim_id: int
     address: Optional[ContactAddressIn] = None
+
+    @field_validator("*", mode="before")
+    def empty_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
 class PassengerOut(PassengerBase):

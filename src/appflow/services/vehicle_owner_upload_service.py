@@ -3,8 +3,11 @@ import urllib.parse
 import fitz  # PyMuPDF
 from PIL import Image
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
+from libdata.models.tables import HistoryActivities, Claim, CaseDocument
 from libdata.enums import HistoryLogType
+from appflow.services.s3_service import S3Service
+import json
 from libdata.models.tables import HistoryActivities, Claim
 from appflow.utils import build_case_reference
 import io
@@ -192,6 +195,7 @@ def process_vehicle_owner(files, db: Session, ocr_service, claim_id: int, actor_
         results.append(parsed)
 
     return results, uploaded_files
+
 def extract_owner_data(text: str):
     fields = {
         "gender":"",
@@ -231,7 +235,7 @@ def extract_owner_data(text: str):
         name_parts = owner_line.split(" ", 1)
         fields["first_name"] = name_parts[0]
         fields["surname"] = name_parts[1] if len(name_parts) > 1 else ""
-        fields["payment_benificiary"] = owner_line
+        fields["payment_benificiary"] = ""
 
     # 3. Collect address: continuous block just before postcode
     address_lines = []
@@ -256,106 +260,182 @@ def extract_owner_data(text: str):
 
 
 def extract_text_from_pdf(file_path: str) -> str:
-    import fitz
-    from pdf2image import convert_from_path
-
     text = ""
 
-    # Step 1: Try PyMuPDF
-    pdf = fitz.open(file_path)
-    for page_num in range(pdf.page_count):
-        page = pdf.load_page(page_num)
-        text += page.get_text("text") + "\n"
+    # Step 1: Try standard text extraction (Fast)
+    doc = fitz.open(file_path)
+    for page in doc:
+        text += page.get_text() + "\n"
 
-    # Step 2: If no text → OCR fallback
+    # Step 2: If no text (Scanned PDF) -> Use Tesseract OCR
     if len(text.strip()) < 20:
-        convert_kwargs = {"dpi": 300}
-        if POPPLER_PATH:
-            convert_kwargs["poppler_path"] = POPPLER_PATH
-        try:
-            images = convert_from_path(file_path, **convert_kwargs)
-        except Exception as e:
-            # If poppler is not available, return the text extracted by PyMuPDF
-            # even if it's minimal, rather than failing completely
-            if "poppler" in str(e).lower() or "page count" in str(e).lower():
-                raise Exception(
-                    "Poppler is required for PDF OCR processing. "
-                    "Please install poppler-utils (e.g., 'apt-get install poppler-utils' on Ubuntu) "
-                    "or set POPPLER_PATH environment variable."
-                ) from e
-            raise
         ocr_text = ""
-
-        for i, img in enumerate(images):
-            # FIX: Windows-safe temp file handling
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tmp_path = tmp.name
-            tmp.close()
-
-            img.save(tmp_path, format="PNG")
-            page_ocr = extract_text_from_image_vision(tmp_path)
-            ocr_text += page_ocr + "\n"
-
-            os.remove(tmp_path)
-
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            
+            # Render page to a high-resolution image (300 DPI)
+            # Matrix(2, 2) scales the image by 2x for better OCR accuracy
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            
+            # Convert Pixmap to PIL Image
+            img_data = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_data))
+            
+            # Use Pytesseract to extract text
+            page_ocr = pytesseract.image_to_string(img)
+            ocr_text += f"--- Page {page_num + 1} ---\n{page_ocr}\n"
+            
+        doc.close()
         return ocr_text
 
+    doc.close()
     return text
 
-
 class VehicleOCRService:
-    def process_file(self, file, db: Session, claim_id: int, actor_id: int,tenant_id:int,ts:str):
-        # Validate claim exists
-        claim = db.query(Claim).filter(Claim.id == claim_id).first()
-        if not claim:
-            raise ValueError(f"Claim with id {claim_id} does not exist")
+   def process_file(
+    self,
+    file,
+    db: Session,
+    claim_id: int,
+    actor_id: int,
+    tenant_id: int,
+    ts: str
+):
+    # Validate claim exists
+    claim = db.query(Claim).filter(Claim.id == claim_id).first()
+    if not claim:
+        raise ValueError(f"Claim with id {claim_id} does not exist")
 
-        base_dir = _history_base_dir()
-        # ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        target_dir = os.path.join(base_dir, str(claim_id), ts)
-        os.makedirs(target_dir, exist_ok=True)
+    base_dir = _history_base_dir()
+    target_dir = os.path.join(base_dir, str(claim_id), ts)
+    os.makedirs(target_dir, exist_ok=True)
 
-        # sanitize filename
-        filename = file.filename or "file.bin"
-        safe_filename = filename.replace("/", "_").replace("..", "_")
-        sanitized_filename = urllib.parse.quote(safe_filename)
-        display_filename = safe_filename
-        full_path = os.path.join(target_dir, sanitized_filename)
+    # Sanitize filename
+    filename = file.filename or "file.bin"
+    safe_filename = filename.replace("/", "_").replace("..", "_")
+    sanitized_filename = urllib.parse.quote(safe_filename)
+    display_filename = safe_filename
+    full_path = os.path.join(target_dir, sanitized_filename)
 
-        # save file
-        with open(full_path, "wb") as f:
-            f.write(file.file.read())
+    # Read file once
+    file_bytes = file.file.read()
 
-        # extract text
-        ext = os.path.splitext(full_path)[1].lower()
+    # Save file locally for existing OCR flow
+    with open(full_path, "wb") as f:
+        f.write(file_bytes)
+
+    # Extract text from local saved file
+    ext = os.path.splitext(full_path)[1].lower()
+    text = ""
+
+    if ext == ".pdf":
+        text = extract_text_from_pdf(full_path)
+    elif ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"]:
+        text = extract_text_from_image_vision(full_path)
+    else:
         text = ""
-        if ext == ".pdf":
-            text = extract_text_from_pdf(full_path)
-        elif ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"]:
-            text = extract_text_from_image_vision(full_path)
-            # pdf_path = convert_image_to_pdf(full_path)
-        else:
-            text = ""
 
-        # relative path for response/database
-        rel_path = os.path.relpath(full_path, base_dir).replace("\\", "/")
-        stored_path = "/" + rel_path
+    # Relative local path for existing response/database behaviour
+    rel_path = os.path.relpath(full_path, base_dir).replace("\\", "/")
+    stored_path = "/" + rel_path
 
-        reference = build_case_reference(claim_id,db)
-        # save history activity
-        history = HistoryActivities(
-            claim_id=claim_id,
-            file_name=f'The file named "{display_filename}" has been saved for claim {reference}',
-            file_path=stored_path,
-            file_type=HistoryLogType.ENGINEER_DETAIL,
-            created_by=actor_id,
-            updated_by=actor_id,
-            tenant_id=tenant_id,
-        )
-        db.add(history)
-        db.commit()
-        db.refresh(history)
+    reference = build_case_reference(claim_id, db)
 
-        return text, stored_path, sanitized_filename
+    # Upload same file to S3
+    s3_service = S3Service()
 
+    file.file.seek(0)
+    upload_result = s3_service.upload_case_document_with_fallback(
+        file=file,
+        claim_id=claim_id,
+        category="vehicle-owner",
+        fallback_local_path=full_path,
+    )
+
+    s3_key = upload_result.get("s3_key", "")
+    file_url = upload_result.get("file_url", "")
+    storage_backend = upload_result.get("storage_backend", "s3")
+    storage_error = upload_result.get("storage_error")
+
+    stored_s3_filename = s3_key.split("/")[-1] if s3_key else sanitized_filename
+    content_type = file.content_type or "application/octet-stream"
+
+    preview_type = "file"
+    if ext == ".pdf":
+        preview_type = "pdf"
+    elif ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"]:
+        preview_type = "image"
+
+    # Store in case_documents
+    case_document = CaseDocument(
+        claim_id=claim_id,
+        file_name=stored_s3_filename,
+        original_filename=safe_filename,
+        file_extension=ext,
+        content_type=content_type,
+        file_size_bytes=len(file_bytes),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        category="Claim Entrance Documents",
+        tag="vehicle-owner",
+        source_type="vehicle_owner_upload",
+        s3_key=s3_key,
+        file_url=file_url,
+        version=1,
+        is_latest=True,
+        is_active=True,
+        is_deleted=False,
+        tenant_id=tenant_id,
+        created_by=actor_id,
+        updated_by=actor_id,
+        metadata_json={
+            "claim_id": claim_id,
+            "case_reference": reference,
+            "original_filename": safe_filename,
+            "local_path": stored_path,
+            "document_role": "vehicle_owner_upload",
+            "preview_type": preview_type,
+            "storage_backend": storage_backend,
+            "storage_error": storage_error,
+        },
+    )
+
+    db.add(case_document)
+    db.flush()
+    db.refresh(case_document)
+
+    # Store in history_activities
+    activity_payload = {
+        "source_type": "vehicle_owner_upload",
+        "title": "Vehicle Owner File Uploaded",
+        "summary": f'The file "{display_filename}" has been uploaded for claim {reference}.',
+        "file_name": safe_filename,
+        "file_url": file_url,
+        "s3_key": s3_key,
+        "case_document_id": case_document.id,
+        "local_path": stored_path,
+        "content_type": content_type,
+        "file_extension": ext,
+        "preview_type": preview_type,
+        "storage_backend": storage_backend,
+    }
+
+    history = HistoryActivities(
+        claim_id=claim_id,
+        file_name=f'The file named "{display_filename}" has been uploaded for claim {reference}',
+        file_path=json.dumps(activity_payload),
+        file_type=HistoryLogType.VEHICLE_OWNER_UPLOAD,
+        created_by=actor_id,
+        updated_by=actor_id,
+        tenant_id=tenant_id,
+    )
+
+    db.add(history)
+    db.flush()
+    db.refresh(history)
+
+    db.commit()
+
+    return text, stored_path, sanitized_filename
 vehicle_ocr_service = VehicleOCRService()

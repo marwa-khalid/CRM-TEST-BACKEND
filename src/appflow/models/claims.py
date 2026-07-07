@@ -25,6 +25,9 @@ class ClaimBase(BaseModel):
     client_going_abroad: Optional[bool] = False
     abroad_date: Optional[date] = None
 
+    # Reason shown when the case status is "Rejected".
+    rejection_reason: Optional[str] = None
+
     @field_validator("non_fault_accident", "any_passengers", "client_injured")
     @classmethod
     def _normalize_tri(cls, v):
@@ -56,3 +59,44 @@ class CloseClaimRequest(BaseModel):
 
 class NotifyManagerRequest(BaseModel):
     note: Optional[str] = None
+
+class ClaimListOut(BaseModel):
+    claim_id: int
+    our_reference : str
+    client_name : Optional[str]
+    mobile_tel: Optional[str]
+    incident_date: Optional[datetime]
+    actual_category: Optional[str]
+    claim_type: Optional[str] = None
+    handler: Optional[str]
+    case_status: Optional[str]
+    rejection_reason: Optional[str] = None
+    latest_update_str: Optional[str]
+    priority:str
+    file_opened_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ClaimDisplayLabels:
+    labels = {
+        "claim_type_id": "Claim type",
+        "handler_id": "Handler",
+        "target_debt_id": "Target debt",
+        "case_status_id": "Case status",
+        "source_id": "How did the customer find us?",
+        "source_staff_user_id": "If staff marketing which?",
+        "prospects_id": "Prospects of file",
+        "present_position_id": "Present file position",
+        "credit_hire_accepted": "Credit hire accepted?",
+        "non_fault_accident": "Non-fault accident",
+        "any_passengers": "Any passengers?",
+        "client_injured": "Client injured?",
+        "client_going_abroad": "Client going abroad soon?",
+        "abroad_date": "Date",
+        "rejection_reason": "Rejection reason",
+    }
+
+    @classmethod
+    def format(cls, field_name: str):
+        return cls.labels.get(field_name, field_name.replace("_", " ").title())
