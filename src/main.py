@@ -16,11 +16,22 @@ app = FastAPI(
 )
 # CORS Middleware.
 # httpOnly auth cookies require credentials + explicit origins ("*" is rejected
-# by browsers when allow_credentials=True). Set FRONTEND_URL (comma-separated for
-# multiple) in the environment; local dev ports are always allowed.
-_frontend_origins = [o.strip() for o in os.getenv("FRONTEND_URL", "").split(",") if o.strip()]
+# by browsers when allow_credentials=True). Set FRONTEND_URL, FRONTEND_BASE_URL,
+# or CORS_ALLOWED_ORIGINS (comma-separated) in the environment.
+def _split_origins(*values: str):
+    origins = []
+    for value in values:
+        origins.extend(origin.strip().rstrip("/") for origin in value.split(",") if origin.strip())
+    return origins
+
+
 _allowed_origins = list(dict.fromkeys(
-    _frontend_origins + ["http://localhost:5173", "http://localhost:5174"]
+    _split_origins(
+        os.getenv("CORS_ALLOWED_ORIGINS", ""),
+        os.getenv("FRONTEND_URL", ""),
+        os.getenv("FRONTEND_BASE_URL", ""),
+    )
+    + ["http://localhost:5173", "http://localhost:5174"]
 ))
 app.add_middleware(
     CORSMiddleware,
