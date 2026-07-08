@@ -86,19 +86,19 @@ async def create_ai_damage_report_router(
         raise HTTPException(status_code=500, detail=f"Error creating AI damage report: {str(e)}")
 
 
-@vehicle_router.post("/import_client_vehicle/")
+@vehicle_router.post("/import_client_vehicle/", status_code=202)
 async def import_client_vehicle( 
     claim_id: int,
-    request:Request,files: list[UploadFile] = File(...), db: Session = Depends(get_session)):
-    # Call import_client_vehicle function, passing only the required arguments
+    request: Request,
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+):
     actor = actor_id(request)
-    print(claim_id)
     tenant_id = get_tenant_id(request)
-    print(actor)
-    print(tenant_id)
-    vehicle_details = process_client_vehicle(files, db, ocr_service,claim_id, actor,tenant_id)
-
-    return JSONResponse(content={"client_vehicle_detail": vehicle_details}, status_code=200)
+    job = import_job_service.create_job("client_vehicle")
+    payloads = await serialize_uploads(files)
+    background_tasks.add_task(run_client_vehicle_import, job.id, payloads, claim_id, actor, tenant_id)
+    return JSONResponse(content={"job_id": job.id, "status": job.status.value}, status_code=202)
 @vehicle_router.get("/damage-report/{claim_id}/client", response_model=Dict[str, Any])
 def get_client_vehicle_damage_report_router(
     claim_id: int,

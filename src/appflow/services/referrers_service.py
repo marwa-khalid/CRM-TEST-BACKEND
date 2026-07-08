@@ -161,21 +161,46 @@ class ReferrerService:
 
         changed_labels = []
         try:
-            # Handle Driver Commission
-            driver_data = referrer.driver_commission.dict(exclude_unset=True)
-            for k, v in driver_data.items():
-                old = getattr(existing.driver_commission, k)
-                if old != v:
-                    setattr(existing.driver_commission, k, v)
-                    changed_labels.append(ReferrerDisplayLabels.format(k))
+            # Handle Driver Commission. The child record is optional and may not
+            # exist yet (a referrer can be created without one) — create and link
+            # it on the fly instead of dereferencing None (which was the
+            # "'NoneType' object has no attribute 'on_hire_amount'" 500).
+            if referrer.driver_commission is not None:
+                driver_data = referrer.driver_commission.dict(exclude_unset=True)
+                if existing.driver_commission is None:
+                    new_dc = DriverCommission(**driver_data, tenant_id=tenant_id)
+                    new_dc.created_by = actor_id
+                    new_dc.updated_by = actor_id
+                    db.add(new_dc)
+                    db.flush()
+                    existing.driver_commission = new_dc
+                    existing.driver_commission_id = new_dc.id
+                    changed_labels.extend(ReferrerDisplayLabels.format(k) for k in driver_data)
+                else:
+                    for k, v in driver_data.items():
+                        old = getattr(existing.driver_commission, k)
+                        if old != v:
+                            setattr(existing.driver_commission, k, v)
+                            changed_labels.append(ReferrerDisplayLabels.format(k))
 
-            # Handle Referrer Commission
-            referrer_data = referrer.referrer_commission.dict(exclude_unset=True)
-            for k, v in referrer_data.items():
-                old = getattr(existing.referrer_commission, k)
-                if old != v:
-                    setattr(existing.referrer_commission, k, v)
-                    changed_labels.append(ReferrerDisplayLabels.format(f"ref_{k}"))
+            # Handle Referrer Commission (same optional-child handling).
+            if referrer.referrer_commission is not None:
+                referrer_data = referrer.referrer_commission.dict(exclude_unset=True)
+                if existing.referrer_commission is None:
+                    new_rc = ReferrerCommission(**referrer_data, tenant_id=tenant_id)
+                    new_rc.created_by = actor_id
+                    new_rc.updated_by = actor_id
+                    db.add(new_rc)
+                    db.flush()
+                    existing.referrer_commission = new_rc
+                    existing.referrer_commission_id = new_rc.id
+                    changed_labels.extend(ReferrerDisplayLabels.format(f"ref_{k}") for k in referrer_data)
+                else:
+                    for k, v in referrer_data.items():
+                        old = getattr(existing.referrer_commission, k)
+                        if old != v:
+                            setattr(existing.referrer_commission, k, v)
+                            changed_labels.append(ReferrerDisplayLabels.format(f"ref_{k}"))
 
             # Parent Referrer fields
             parent_data = referrer.dict(exclude={'driver_commission', 'referrer_commission'}, exclude_unset=True)

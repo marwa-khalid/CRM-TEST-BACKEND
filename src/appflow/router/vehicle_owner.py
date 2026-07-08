@@ -54,14 +54,13 @@ def deactivate_vehicle_owner(claim_id: int, request: Request, db: Session = Depe
 @vehicle_owner_router.post("/import-vehicle-owner/", status_code=202)
 async def import_vehicle_owner(
     claim_id: int,
-    request:Request,
+    request: Request,
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
-   db: Session = Depends(get_session)
 ):
     actor = actor_id(request)
     tenant_id = get_tenant_id(request)
-    vehicle_owner_details=process_vehicle_owner(files, db,  vehicle_ocr_service, claim_id, actor,tenant_id)
-    print(vehicle_owner_details)
-    # return {"job_id": job.id, "status": job.status.value}
-    return JSONResponse(content={"client_vehicle_owner_detail": vehicle_owner_details}, status_code=200)
-
+    job = import_job_service.create_job("vehicle_owner")
+    payloads = await serialize_uploads(files)
+    background_tasks.add_task(run_vehicle_owner_import, job.id, payloads, claim_id, actor, tenant_id)
+    return JSONResponse(content={"job_id": job.id, "status": job.status.value}, status_code=202)
