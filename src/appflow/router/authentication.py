@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
@@ -27,23 +29,32 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 
+# Cross-site production (Netlify SPA served over https, or an API on a different
+# site) needs SameSite=None + Secure for the cookie to be accepted. But over plain
+# http://localhost a Secure cookie is dropped by the browser (Safari especially),
+# so local dev overrides via env:  COOKIE_SECURE=false  COOKIE_SAMESITE=lax
+_COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").strip().lower() not in ("false", "0", "no")
+_COOKIE_SAMESITE = (os.getenv("COOKIE_SAMESITE", "none").strip().lower() or "none")
+
+
 def _set_auth_cookie(response: Response, token: str) -> None:
-    """Store the JWT in an httpOnly cookie so JS (and XSS) can't read it.
-    SameSite=None + Secure is required because the SPA and API are on
-    different origins (e.g. Netlify ↔ Render)."""
+    """Store the JWT in an httpOnly cookie so JS (and XSS) can't read it."""
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=_COOKIE_SECURE,
+        samesite=_COOKIE_SAMESITE,
         max_age=_COOKIE_MAX_AGE,
         path="/",
     )
 
 
 def _clear_auth_cookie(response: Response) -> None:
-    response.delete_cookie("access_token", path="/", samesite="none", secure=True)
+    # delete_cookie must use the same attributes the cookie was set with.
+    response.delete_cookie(
+        "access_token", path="/", samesite=_COOKIE_SAMESITE, secure=_COOKIE_SECURE
+    )
 
 
 @router.post("/invite-user")

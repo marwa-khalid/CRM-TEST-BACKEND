@@ -31,7 +31,16 @@ _allowed_origins = list(dict.fromkeys(
         os.getenv("FRONTEND_URL", ""),
         os.getenv("FRONTEND_BASE_URL", ""),
     )
-    + ["http://localhost:5173", "http://localhost:5174"]
+    # Local dev ports + the production Netlify origin are always allowed, so CORS
+    # works out of the box even without a host env var. FRONTEND_URL still drives
+    # email links (witness_email.py); set it per environment:
+    #   local -> http://localhost:5174 ; prod -> https://claims-crm.netlify.app
+    + [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "https://claims-crm.netlify.app",
+        "http://claims-crm.netlify.app",
+    ]
 ))
 app.add_middleware(
     CORSMiddleware,
