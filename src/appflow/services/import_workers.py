@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 from typing import Iterable, List
 
 from fastapi import UploadFile
@@ -49,6 +50,7 @@ def run_client_vehicle_import(job_id: str, payloads: List[FilePayload], claim_id
         import_job_service.mark_completed(job_id, result)
         _notify_import_done(actor_id, tenant_id, "vehicle details")
     except Exception as exc:  # pylint: disable=broad-exception-caught
+        traceback.print_exc()  # surface the real error in the Railway logs
         import_job_service.mark_failed(job_id, str(exc))
         _notify_import_done(actor_id, tenant_id, "vehicle details", ok=False)
     finally:
@@ -70,6 +72,7 @@ def run_vehicle_owner_import(job_id: str, payloads: List[FilePayload], claim_id:
         )
         _notify_import_done(actor_id, tenant_id, "vehicle owner")
     except Exception as exc:  # pylint: disable=broad-exception-caught
+        traceback.print_exc()  # surface the real error in the Railway logs
         import_job_service.mark_failed(job_id, str(exc))
         _notify_import_done(actor_id, tenant_id, "vehicle owner", ok=False)
     finally:
@@ -91,6 +94,7 @@ def run_engineer_detail_import(job_id: str, payloads: List[FilePayload], claim_i
         )
         _notify_import_done(actor_id, tenant_id, "engineer report")
     except Exception as exc:  # pylint: disable=broad-exception-caught
+        traceback.print_exc()  # surface the real error in the Railway logs
         import_job_service.mark_failed(job_id, str(exc))
         _notify_import_done(actor_id, tenant_id, "engineer report", ok=False)
     finally:

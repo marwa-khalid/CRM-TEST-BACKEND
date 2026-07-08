@@ -778,24 +778,39 @@ def get_dashboard(db: Session, tenant_id: Optional[int],
     # and the settlement date (DirectHirePayment.date_settlement_received).
     # Claims without both dates can't be aged, so they're skipped.
     buckets = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
-    settle_q = db.query(DirectHirePayment).join(Claim, DirectHirePayment.claim_id == Claim.id)
-    settle_q = settle_q.filter(Claim.is_deleted.isnot(True))
+    settle_q = db.query(
+        DirectHirePayment.claim_id,
+        DirectHirePayment.settlement_amount_received,
+        DirectHirePayment.date_settlement_received,
+    ).join(Claim, DirectHirePayment.claim_id == Claim.id).filter(Claim.is_deleted.isnot(True))
     if tenant_id is not None:
         settle_q = settle_q.filter(Claim.tenant_id == tenant_id)
-    for dhp in settle_q.all():
-        amount = _f(dhp.settlement_amount_received)
-        if amount <= 0 or not dhp.date_settlement_received:
-            continue
-        abi = (
-            db.query(ABIBHRCharges.payment_pack_raised_date)
-            .filter(ABIBHRCharges.claim_id == dhp.claim_id,
+    settle_rows = settle_q.all()
+
+    # Batch-load the payment-pack raised date per claim in ONE query. This used to
+    # be an N+1 (a separate ABIBHRCharges lookup for every settlement row), which
+    # was the dashboard's main slowdown against the remote DB.
+    settle_claim_ids = {r[0] for r in settle_rows if r[0] is not None}
+    raised_by_claim = {}
+    if settle_claim_ids:
+        for cid, raised in (
+            db.query(ABIBHRCharges.claim_id, ABIBHRCharges.payment_pack_raised_date)
+            .filter(ABIBHRCharges.claim_id.in_(settle_claim_ids),
                     ABIBHRCharges.payment_pack_raised_date.isnot(None))
-            .first()
-        )
-        raised = abi[0] if abi else None
+            .all()
+        ):
+            # Keep the first non-null per claim (matches the old .first() semantics).
+            if cid not in raised_by_claim:
+                raised_by_claim[cid] = raised
+
+    for claim_id_val, settlement_amount, date_settled in settle_rows:
+        amount = _f(settlement_amount)
+        if amount <= 0 or not date_settled:
+            continue
+        raised = raised_by_claim.get(claim_id_val)
         if not raised:
             continue  # no payment-pack date → can't compute the age
-        days = max(0, (dhp.date_settlement_received - raised).days)
+        days = max(0, (date_settled - raised).days)
         # Non-overlapping bands: 0-30, 31-60, 61-90, 90+ (a day-30 claim is only in 0-30).
         key = "0-30 Days" if days <= 30 else "31-60 Days" if days <= 60 else "61-90 Days" if days <= 90 else "90+ Days"
         buckets[key] += amount

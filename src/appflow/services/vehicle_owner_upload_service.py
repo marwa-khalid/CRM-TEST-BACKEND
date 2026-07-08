@@ -282,8 +282,23 @@ def extract_text_from_pdf(file_path: str) -> str:
             img_data = pix.tobytes("png")
             img = Image.open(io.BytesIO(img_data))
             
-            # Use Pytesseract to extract text
-            page_ocr = pytesseract.image_to_string(img)
+            # Prefer Google Vision (reliable in prod) for the rendered page; it
+            # falls back to Tesseract internally and returns "" on failure, so an
+            # OCR-engine error can never abort the whole import.
+            page_ocr = ""
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as _tmp:
+                    _tmp.write(img_data)
+                    _tmp_path = _tmp.name
+                try:
+                    page_ocr = extract_text_from_image_vision(_tmp_path)
+                finally:
+                    try:
+                        os.remove(_tmp_path)
+                    except OSError:
+                        pass
+            except Exception as _exc:  # pylint: disable=broad-exception-caught
+                print(f"Warning: scanned-PDF OCR failed on page {page_num + 1}: {_exc}")
             ocr_text += f"--- Page {page_num + 1} ---\n{page_ocr}\n"
             
         doc.close()

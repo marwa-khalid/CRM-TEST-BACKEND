@@ -4,12 +4,17 @@ WORKDIR /app
 ENV PYTHONPATH=/app/src
 ENV MPLCONFIGDIR=/tmp/matplotlib
 
-# System deps required by OpenCV / EasyOCR / WeasyPrint
+# System deps: OpenCV / EasyOCR / WeasyPrint (libgl1, glib, pango, cairo),
+# plus tesseract-ocr (pytesseract, used for scanned-PDF OCR fallback) and
+# poppler-utils (pdf2image.convert_from_path / pdfinfo). Without these the
+# scanned-PDF OCR path raises TesseractNotFoundError and the import job fails.
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     libpangocairo-1.0-0 \
     libcairo2 \
+    tesseract-ocr \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
