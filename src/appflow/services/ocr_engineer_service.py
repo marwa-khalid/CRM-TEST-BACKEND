@@ -18,11 +18,9 @@ from typing import List, Dict, Any
 from google.cloud import vision
 from dateutil import parser as dateparser
 import tempfile
+from appflow.services.google_vision_auth import configure_google_vision_credentials
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(
-    os.path.dirname(__file__), "google_credentials", "vision-service-account.json"
-)
-
+configure_google_vision_credentials()
 client = vision.ImageAnnotatorClient()
 
 UPLOAD_DIR = "uploads"

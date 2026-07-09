@@ -9,6 +9,7 @@ load_dotenv()
 from appflow.router import authentication
 from appflow.router.root import root_router
 from appflow.router.vehicle_report_version import version_router
+from appflow.router.fleet import fleet_router
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
@@ -57,6 +58,7 @@ def healthcheck():
 app.include_router(root_router)
 app.include_router(authentication.router)
 app.include_router(version_router)
+app.include_router(fleet_router)
 
 UPLOAD_DIR = os.path.abspath(os.path.join(os.getcwd(), "uploads"))
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")

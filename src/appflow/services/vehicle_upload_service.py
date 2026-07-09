@@ -1,8 +1,9 @@
 import os
 import urllib.parse
 import fitz  # PyMuPDF
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
+import numpy as np
 import json
 from sqlalchemy.orm import Session
 import mimetypes
@@ -19,12 +20,20 @@ import tempfile
 from pdf2image import convert_from_path
 from appflow.services.s3_service import S3Service
 from libdata.models.tables import CaseDocument
+from appflow.services.google_vision_auth import configure_google_vision_credentials
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(
-    os.path.dirname(__file__), "google_credentials", "vision-service-account.json"
-)
-
+configure_google_vision_credentials()
 client = vision.ImageAnnotatorClient()
+_easyocr_reader = None
+
+
+def get_easyocr_reader():
+    """Lazy EasyOCR fallback for cases where Vision/Tesseract returns no text."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+        _easyocr_reader = easyocr.Reader(["en"])
+    return _easyocr_reader
 
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
@@ -43,10 +52,47 @@ def extract_text_with_tesseract(image_path: str) -> str:
     """Fallback OCR using local Tesseract when Google Vision is unavailable."""
     try:
         with Image.open(image_path) as img:
-            return pytesseract.image_to_string(img)
+            gray = ImageOps.grayscale(img.convert("RGB"))
+
+        def prepare(crop):
+            crop = ImageOps.autocontrast(crop)
+            crop = ImageEnhance.Contrast(crop).enhance(1.8)
+            return crop.resize((crop.width * 4, crop.height * 4))
+
+        width, height = gray.size
+        crops = [
+            gray,
+            gray.crop((0, 0, width, int(height * 0.62))),
+            gray.crop((0, 0, int(width * 0.55), int(height * 0.70))),
+        ]
+
+        parts = []
+        for crop in crops:
+            text = pytesseract.image_to_string(prepare(crop), config="--psm 6")
+            if text.strip():
+                parts.append(text)
+        return "\n".join(parts)
     except Exception as exc:
         print(f"Warning: Local OCR failed for {image_path}: {exc}")
         return ""
+
+
+def extract_text_with_easyocr(image_path: str) -> str:
+    """Final OCR fallback using EasyOCR when other engines return no text."""
+    try:
+        with Image.open(image_path) as img:
+            img_np = np.array(img)
+        return "\n".join(result[1] for result in get_easyocr_reader().readtext(img_np))
+    except Exception as exc:
+        print(f"Warning: EasyOCR failed for {image_path}: {exc}")
+        return ""
+
+
+def extract_text_with_local_fallbacks(image_path: str) -> str:
+    text = extract_text_with_tesseract(image_path)
+    if text.strip():
+        return text
+    return extract_text_with_easyocr(image_path)
 
 
 def extract_text_from_image_vision(image_path: str) -> str:
@@ -63,10 +109,10 @@ def extract_text_from_image_vision(image_path: str) -> str:
         texts = response.text_annotations
         if texts:
             return texts[0].description
-        return ""
+        return extract_text_with_local_fallbacks(image_path)
     except Exception as exc:
-        print(f"Warning: Google Vision OCR failed for {image_path}: {exc}. Falling back to Tesseract.")
-        return extract_text_with_tesseract(image_path)
+        print(f"Warning: Google Vision OCR failed for {image_path}: {exc}. Falling back to local OCR.")
+        return extract_text_with_local_fallbacks(image_path)
 
 def extract_text_from_images_vision(image_paths: List[str]) -> List[str]:
     """Run OCR over multiple images and return list of page texts (in order)."""
@@ -270,6 +316,16 @@ def extract_vehicle_details_from_text(full_text: str):
     if not full_text or not full_text.strip():
         return fields
 
+    # Prefer the LLM extractor (robust across V5C layouts); fall back to the
+    # regex parsing below if it's unavailable or can't extract anything.
+    try:
+        from appflow.services.llm_extractor import extract_vehicle_fields_llm
+        _llm = extract_vehicle_fields_llm(full_text)
+        if _llm:
+            return {**fields, **_llm}
+    except Exception as _exc:  # pylint: disable=broad-exception-caught
+        print(f"LLM vehicle extraction error, using regex fallback: {_exc}")
+
     # Normalize
     single_line = re.sub(r"\s+", " ", full_text).strip()
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
@@ -283,33 +339,40 @@ def extract_vehicle_details_from_text(full_text: str):
         "make": [
             rf"D\.1[:\s]*Make\s*[:\-]?\s*([A-Za-z0-9\- ]+?)(?=\s{stop_tokens})",
             rf"\bMake\s*[:\-]?\s*([A-Za-z0-9\- ]+?)(?=\s{stop_tokens})",
+            r"(?:D\.?1|0\.?1|O\.?1)[:;\s]*(?:Make|Mee|Mke)?\s*([A-Z][A-Z0-9\- ]{1,30})",
         ],
         "model": [
             rf"D\.3[:\s]*Model\s*[:\-]?\s*([A-Za-z0-9 \-]+?)(?=\s{stop_tokens})",
             rf"\bModel\s*[:\-]?\s*([A-Za-z0-9 \-]+?)(?=\s{stop_tokens})",
             rf"D\.\d[:\s]*Type\s*[:\-]?\s*([A-Za-z0-9 \-]+?)(?=\s{stop_tokens})",
+            r"(?:D\.?3|D\.?2|0\.?2|O\.?2)[:;\s]*(?:Model|Mode|Type|Tye|te)?\s*([A-Z0-9][A-Z0-9 \-]+?)(?=\s+(?:O\.|0\.|D\.|X\)|P[\.23]|6\.1|S\.1|Body|Tax|$))",
         ],
         "body_type": [r"Body\s*Type\s*[:\-]?\s*([A-Za-z0-9 ]+)",
                       r"Body\s*[:\-]?\s*([A-Za-z0-9 ]+)",
+                      r"Body\s*(?:type|tye|tre|te)\s*[:\-]?\s*([A-Za-z0-9 ]+?)(?=\s+(?:O\.|0\.|D\.|X\)|P|6\.1|S\.1|Tax|$))",
         ],
         "registration": [
+            r"\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b",
             r"\b([A-Z]{1,2}\d{1,2}\s?[A-Z]{3})\b",
         ],
         "color": [
             rf"R[:\s]*Colour\s*[:\-]?\s*([A-Za-z]+)(?=\s|$)",
             rf"\bColour\s*[:\-]?\s*([A-Za-z]+)(?=\s|$)",
             rf"\bColor\s*[:\-]?\s*([A-Za-z]+)(?=\s|$)",
+            rf"\bCom(?:er|our|or)?\s*[:\-]?\s*([A-Za-z]+)(?=\s|$)",
         ],
         "engine_size": [
             r"Engine\s*Size\s*[:\-]?\s*([\d\.]+\s?[Cc][Cc]?)",
             r"Engine\s*[:\-]?\s*([\d\.]+\s?L)",
             r"Cylinder capacity\s*[:\-]?\s*([\d,]+\s?CC|\d+\s?CC|\d+\s?cc)",
             r"P\.1[:\s]*Cylinder capacity\s*\(?cc\)?\s*[:\-]?\s*([\d,]+\s?CC|\d+\s?CC)",
+            r"Cy(?:l|i)nder.{0,30}?([0-9]{3,5}\s?CC)",
         ],
         "number_of_seat": [
             r"No\.?\s*of\s*seats?\s*[:\-]?\s*(\d{1,2})",
             r"Number of seats[:,]?\s*(\d{1,2})",
             r"S\.1[:\s]*Number of seats[,]?\s*(\d{1,2})",
+            r"(?:S\.?1|6\.?1)[:\s]*.*?seats?[,.\s]*(\d{1,2})",
         ],
         "vehicle_category": [
             r"Vehicle category\s*[:\-]?\s*([A-Za-z0-9]+)",
@@ -391,6 +454,41 @@ def extract_vehicle_details_from_text(full_text: str):
 
     for k in ("make", "model", "color"):
         fields[k] = strip_trailing_single_char_token(fields.get(k, "") or "")
+
+    common_makes = [
+        "TOYOTA", "FORD", "VAUXHALL", "VOLKSWAGEN", "BMW", "MERCEDES", "AUDI",
+        "NISSAN", "HONDA", "HYUNDAI", "KIA", "PEUGEOT", "RENAULT", "SKODA",
+        "SEAT", "VOLVO", "TESLA", "LEXUS", "LAND ROVER", "RANGE ROVER",
+    ]
+    make_source = f"{fields.get('make', '')} {single_line}".upper()
+    for make in common_makes:
+        if re.search(r"\b" + re.escape(make) + r"\b", make_source):
+            fields["make"] = make.title()
+            break
+
+    fields["model"] = (
+        fields["model"]
+        .replace("HYBAD", "HYBRID")
+        .replace("HYBRD", "HYBRID")
+        .replace("VVT4", "VVT-I")
+        .replace("CvT", "CVT")
+    )
+
+    common_body_types = [
+        "ESTATE", "HATCHBACK", "SALOON", "COUPE", "CONVERTIBLE", "MPV", "SUV",
+        "PICKUP", "VAN", "MINIBUS",
+    ]
+    body_source = f"{fields.get('body_type', '')} {single_line}".upper()
+    for body_type in common_body_types:
+        if re.search(r"\b" + re.escape(body_type) + r"\b", body_source):
+            fields["body_type"] = body_type
+            break
+
+    if fields["vehicle_category"].upper() in {"MI", "M L", "M I"}:
+        fields["vehicle_category"] = "M1"
+
+    if not fields["transmission_id"] and re.search(r"\b(?:automated|automatic|tometed|artometes|atmce)\b", single_line, re.IGNORECASE):
+        fields["transmission_id"] = 1
 
     # If the captured colour is empty OR not an actual vehicle colour (the generic
     # capture can latch onto a nearby "Technical"/heading word on the V5C), fall

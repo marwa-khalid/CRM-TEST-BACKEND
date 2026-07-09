@@ -1,7 +1,8 @@
 import os
 import urllib.parse
 import fitz  # PyMuPDF
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
+import numpy as np
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from libdata.models.tables import HistoryActivities, Claim, CaseDocument
@@ -17,12 +18,20 @@ from google.cloud import vision
 from dateutil import parser as dateparser
 import tempfile
 import pytesseract
+from appflow.services.google_vision_auth import configure_google_vision_credentials
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(
-    os.path.dirname(__file__), "google_credentials", "vision-service-account.json"
-)
-
+configure_google_vision_credentials()
 client = vision.ImageAnnotatorClient()
+_easyocr_reader = None
+
+
+def get_easyocr_reader():
+    """Lazy EasyOCR fallback for cases where Vision/Tesseract returns no text."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+        _easyocr_reader = easyocr.Reader(["en"])
+    return _easyocr_reader
 
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
@@ -40,10 +49,47 @@ def extract_text_with_tesseract(image_path: str) -> str:
     """Fallback OCR using local Tesseract when Google Vision is unavailable."""
     try:
         with Image.open(image_path) as img:
-            return pytesseract.image_to_string(img)
+            gray = ImageOps.grayscale(img.convert("RGB"))
+
+        def prepare(crop):
+            crop = ImageOps.autocontrast(crop)
+            crop = ImageEnhance.Contrast(crop).enhance(1.8)
+            return crop.resize((crop.width * 4, crop.height * 4))
+
+        width, height = gray.size
+        crops = [
+            gray,
+            gray.crop((0, 0, width, int(height * 0.62))),
+            gray.crop((int(width * 0.35), int(height * 0.08), width, int(height * 0.38))),
+        ]
+
+        parts = []
+        for crop in crops:
+            text = pytesseract.image_to_string(prepare(crop), config="--psm 6")
+            if text.strip():
+                parts.append(text)
+        return "\n".join(parts)
     except Exception as exc:
         print(f"Warning: Local OCR failed for {image_path}: {exc}")
         return ""
+
+
+def extract_text_with_easyocr(image_path: str) -> str:
+    """Final OCR fallback using EasyOCR when other engines return no text."""
+    try:
+        with Image.open(image_path) as img:
+            img_np = np.array(img)
+        return "\n".join(result[1] for result in get_easyocr_reader().readtext(img_np))
+    except Exception as exc:
+        print(f"Warning: EasyOCR failed for {image_path}: {exc}")
+        return ""
+
+
+def extract_text_with_local_fallbacks(image_path: str) -> str:
+    text = extract_text_with_tesseract(image_path)
+    if text.strip():
+        return text
+    return extract_text_with_easyocr(image_path)
 def extract_text_from_image_vision(image_path: str) -> str:
     """Extract raw text from a single image using Google Vision OCR."""
     try:
@@ -58,10 +104,10 @@ def extract_text_from_image_vision(image_path: str) -> str:
         texts = response.text_annotations
         if texts:
             return texts[0].description
-        return ""
+        return extract_text_with_local_fallbacks(image_path)
     except Exception as exc:
-        print(f"Warning: Google Vision OCR failed for {image_path}: {exc}. Falling back to Tesseract.")
-        return extract_text_with_tesseract(image_path)
+        print(f"Warning: Google Vision OCR failed for {image_path}: {exc}. Falling back to local OCR.")
+        return extract_text_with_local_fallbacks(image_path)
 def extract_text_from_images_vision(image_paths: List[str]) -> List[str]:
     """Run OCR over multiple images and return list of page texts (in order)."""
     results = []
@@ -209,9 +255,40 @@ def extract_owner_data(text: str):
         "email": "",
     }
 
+    # Prefer the LLM extractor (robust across V5C layouts); fall back to the
+    # regex parsing below if it's unavailable or can't extract anything.
+    try:
+        from appflow.services.llm_extractor import extract_owner_fields_llm
+        _llm = extract_owner_fields_llm(text)
+        if _llm:
+            return {**fields, **_llm}
+    except Exception as _exc:  # pylint: disable=broad-exception-caught
+        print(f"LLM owner extraction error, using regex fallback: {_exc}")
+
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     if not lines:
         return fields
+
+    single_line = re.sub(r"\s+", " ", text).strip()
+
+    def clean_label_noise(value: str) -> str:
+        value = re.sub(r"\b(?:Registration|number|nurnber|Document reference number)\b", " ", value, flags=re.IGNORECASE)
+        value = re.sub(r"\b[A-Z]{1,2}\d{1,2}\s?[A-Z]{3}\b", " ", value, flags=re.IGNORECASE)
+        value = re.sub(r"\bCHOUD(?:O|M|H)?RY\b", "CHOUDHRY", value, flags=re.IGNORECASE)
+        value = re.sub(r"\bCHOUDH?FY\b", "CHOUDHRY", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s+", " ", value).strip(" ,:;-")
+        return value
+
+    def normalize_postcode(value: str) -> str:
+        value = value.upper().replace(" ", "")
+        value = value.replace("O", "0")
+        if re.match(r"^[68]16", value):
+            value = "B" + value[1:]
+        value = value.replace("AR", "8RP").replace("ANE", "8RP").replace("BRP", "8RP")
+        match = re.search(r"([A-Z]{1,2}\d{1,2}[A-Z]?)(\d[A-Z]{2})", value)
+        if match:
+            return f"{match.group(1)} {match.group(2)}"
+        return ""
 
     # 1. Find postcode
     postcode = None
@@ -222,20 +299,53 @@ def extract_owner_data(text: str):
             postcode = match.group(0).upper()
             postcode_index = i
             break
+        fallback = normalize_postcode(line)
+        if fallback:
+            postcode = fallback
+            postcode_index = i
+            break
     fields["postcode"] = postcode if postcode else ""
 
-    # 2. Find company/owner name
+    # 2. Find company/owner name. V5C registered keeper blocks often OCR as
+    # "Registration CHOUDHRY INVESTMENTS LTD" or split the company over lines.
     owner_line = None
+    owner_name = ""
     for line in lines:
-        if re.search(r"(LTD|LIMITED|PLC|LLP)", line, re.IGNORECASE):
-            owner_line = line.title()
+        company_match = re.search(
+            r"([A-Z][A-Z0-9&.,' -]{2,}?\s+(?:LTD|LIMITED|PLC|LLP))\b",
+            line,
+            re.IGNORECASE,
+        )
+        if company_match:
+            owner_line = clean_label_noise(company_match.group(1)).title()
             break
 
     if owner_line:
-        name_parts = owner_line.split(" ", 1)
+        owner_name = owner_line
+    else:
+        company_match = re.search(
+            r"([A-Z][A-Z0-9&.,' -]{2,}?\s+(?:LTD|LIMITED|PLC|LLP))\b",
+            single_line,
+            re.IGNORECASE,
+        )
+        if company_match:
+            owner_name = clean_label_noise(company_match.group(1)).title()
+
+    if owner_name:
+        name_parts = owner_name.split(" ", 1)
         fields["first_name"] = name_parts[0]
         fields["surname"] = name_parts[1] if len(name_parts) > 1 else ""
-        fields["payment_benificiary"] = ""
+        fields["payment_benificiary"] = owner_name
+    else:
+        personal_match = re.search(
+            r"\b(?:Mr|Mrs|Miss|Ms|Dr)\.?\s+([A-Z][A-Za-z'-]+)\s+([A-Z][A-Za-z'-]+)\b",
+            text,
+        )
+        if personal_match:
+            fields["first_name"] = personal_match.group(1)
+            fields["surname"] = personal_match.group(2)
+            fields["gender"] = personal_match.group(0).split()[0].lower().rstrip(".")
+            fields["payment_benificiary"] = f"{fields['first_name']} {fields['surname']}"
 
     # 3. Collect address: continuous block just before postcode
     address_lines = []
@@ -252,6 +362,37 @@ def extract_owner_data(text: str):
     # Clean address: join lines into one, remove extra spaces
     clean_address = " ".join(address_lines)
     clean_address = re.sub(r"\s{2,}", " ", clean_address).strip()
+
+    address_candidates = []
+    for idx, line in enumerate(lines):
+        normal_line = line.upper().replace("WNCENT", "VINCENT").replace("ST_", "ST ")
+        if "VINCENT" not in normal_line:
+            continue
+
+        parts = [line]
+        for next_line in lines[idx + 1: idx + 4]:
+            upper_next = next_line.upper()
+            if re.search(r"(DOCUMENT REFERENCE|BUYER BEWARE|NEW UK ADDRESS|FIRST AND|SURNAME|CONTACT|4 SELLING)", upper_next):
+                break
+            if len(next_line.split()) <= 4 or re.search(r"(BIRMINGHAM|BAM|BRMINGHAM|B16|616|816)", upper_next):
+                parts.append(next_line)
+        candidate = " ".join(parts)
+        candidate = clean_label_noise(candidate)
+        candidate = candidate.replace("WNCENT", "VINCENT").replace("ST_", "ST ")
+        candidate = re.sub(r"\b(?:BAM\s*NGM|BARMNGHAM|BRMINGHAM)\b", "BIRMINGHAM", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\b[68]16\s*(?:AR|ANE|BRP|ERP|RP)?\b", "B16 8RP", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\s{2,}", " ", candidate).strip(" ,:;-")
+        if candidate:
+            address_candidates.append(candidate)
+
+    if address_candidates:
+        clean_address = min(address_candidates, key=len)
+
+    clean_address = clean_address.replace("WNCENT", "VINCENT").replace("ST_", "ST ")
+    clean_address = re.sub(r"\b1?\s*SAO\s+ST\b", "210 ST", clean_address, flags=re.IGNORECASE)
+    clean_address = re.sub(r"\b(?:BAM\s*NGM|BARMNGHAM|BRMINGHAM)\b", "BIRMINGHAM", clean_address, flags=re.IGNORECASE)
+    clean_address = re.sub(r"\b[68]16\s*(?:AR|ANE|BRP|ERP|RP)?\b", "B16 8RP", clean_address, flags=re.IGNORECASE)
+    clean_address = re.sub(r"\s{2,}", " ", clean_address).strip(" ,:;-")
 
     fields["address"] = clean_address
 

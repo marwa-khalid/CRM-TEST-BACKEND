@@ -116,3 +116,6 @@ webencodings==0.5.1
 Werkzeug==3.1.6
 yarl==1.22.0
 zopfli==0.4.1
+
+# Claude / Anthropic SDK — LLM-based V5C field extraction (llm_extractor.py)
+anthropic>=0.40.0
