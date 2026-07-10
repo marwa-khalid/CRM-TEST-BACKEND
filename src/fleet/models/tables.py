@@ -16,6 +16,7 @@ class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, index=True, nullable=True)
+    fleet_reference = Column(String(50), unique=True, index=True, nullable=True)
 
     # --- General Details ---
     file_opened_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
@@ -55,6 +56,57 @@ class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     postal_consent = Column(String(20), nullable=True)
     reason_for_withdrawal = Column(Text, nullable=True)
 
+    # --- Hire Vehicle Details (screen 5) ---
+    vehicle_cost_per_week = Column(String(50), nullable=True)
+    deposit = Column(String(50), nullable=True)
+    borough = Column(String(100), nullable=True)
+    registration_number = Column(String(50), nullable=True)
+    make = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    transmission = Column(String(50), nullable=True)
+    hire_status = Column(String(20), nullable=True)  # on_hire | off_hire
+    swap_car = Column(String(10), nullable=True)  # yes | no
+    swap_reason = Column(String(100), nullable=True)
+    swap_reason_text = Column(Text, nullable=True)
+    hire_start_date = Column(Date, nullable=True)
+    hire_end_date = Column(Date, nullable=True)
+    total_hire_period = Column(String(100), nullable=True)
+    hire_insurance_type = Column(String(100), nullable=True)
+    insurance_date_received = Column(Date, nullable=True)
+    policy_start_date = Column(Date, nullable=True)
+    policy_end_date = Column(Date, nullable=True)
+    # Swap → "If Vehicle Cross-Hired to Us" modal
+    cross_hire_provider_name = Column(String(200), nullable=True)
+    cross_hire_contact_details = Column(String(200), nullable=True)
+    cross_hire_rate = Column(String(50), nullable=True)
+
+    # --- Payment Details (screen 7) ---
+    payment_hire_start_date = Column(Date, nullable=True)
+    payment_hire_end_date = Column(Date, nullable=True)
+    vehicle_cost_per_day = Column(String(50), nullable=True)
+    number_of_weekly_payments = Column(String(20), nullable=True)
+    payment_day = Column(Date, nullable=True)
+    security_deposit = Column(String(50), nullable=True)
+    weekly_hire_payment = Column(String(50), nullable=True)
+    total_planned_hire_cost = Column(String(50), nullable=True)
+    initial_amount_due = Column(String(50), nullable=True)
+    payment_damage_charges = Column(String(50), nullable=True)
+    additional_charges = Column(String(100), nullable=True)
+
+
+class FleetHirePayment(Base, AuditStampMixin):
+    """One row of a hire's weekly payment schedule (Record Payment)."""
+    __tablename__ = "fleet_hire_payment"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hire_id = Column(Integer, ForeignKey("fleet_hire.id", ondelete="CASCADE"), index=True, nullable=False)
+    week = Column(Integer, nullable=True)
+    due_amount = Column(String(50), nullable=True)
+    status = Column(String(20), nullable=True)  # paid | partial | pending
+    paid_amount = Column(String(50), nullable=True)
+    payment_date = Column(Date, nullable=True)
+    notes = Column(Text, nullable=True)
+
 
 class FleetHireDocument(Base, AuditStampMixin):
     """A document attached to a hire (utility bills, licence front/back, etc.)."""
@@ -69,4 +121,117 @@ class FleetHireDocument(Base, AuditStampMixin):
     storage_backend = Column(String(50), nullable=True)
     received_on = Column(Date, nullable=True)
     extracted_address = Column(Text, nullable=True)
+    created_by = Column(Integer, nullable=True)
+
+
+class FleetHireAudit(Base):
+    """Field-level change log for a hire (drives the GDPR screen's Audit Log)."""
+    __tablename__ = "fleet_hire_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hire_id = Column(Integer, ForeignKey("fleet_hire.id", ondelete="CASCADE"), index=True, nullable=False)
+    user = Column(String(200), nullable=True)  # display name of who made the change
+    field_changed = Column(String(100), nullable=False)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    changed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+
+
+class FleetHireVehicle(Base, AuditStampMixin):
+    """One hire vehicle (a hire can hold many — each swap adds a new one). Holds
+    the Hire Vehicle Details + its off-hire checkout."""
+    __tablename__ = "fleet_hire_vehicle"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hire_id = Column(Integer, ForeignKey("fleet_hire.id", ondelete="CASCADE"), index=True, nullable=False)
+    position = Column(Integer, nullable=True)
+
+    vehicle_cost_per_week = Column(String(50), nullable=True)
+    deposit = Column(String(50), nullable=True)
+    borough = Column(String(100), nullable=True)
+    registration_number = Column(String(50), nullable=True)
+    make = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    transmission = Column(String(50), nullable=True)
+    hire_status = Column(String(20), nullable=True)  # on_hire | off_hire
+    swap_car = Column(String(10), nullable=True)
+    swap_reason = Column(String(100), nullable=True)
+    swap_reason_text = Column(Text, nullable=True)
+    hire_start_date = Column(Date, nullable=True)
+    hire_end_date = Column(Date, nullable=True)
+    total_hire_period = Column(String(100), nullable=True)
+    hire_insurance_type = Column(String(100), nullable=True)
+    insurance_date_received = Column(Date, nullable=True)
+    policy_start_date = Column(Date, nullable=True)
+    policy_end_date = Column(Date, nullable=True)
+    cross_hire_provider_name = Column(String(200), nullable=True)
+    cross_hire_contact_details = Column(String(200), nullable=True)
+    cross_hire_rate = Column(String(50), nullable=True)
+
+    # off-hire checkout
+    mileage_start = Column(String(50), nullable=True)
+    mileage_end = Column(String(50), nullable=True)
+    checkout_date = Column(Date, nullable=True)
+    checkout_time = Column(String(10), nullable=True)
+    checkout_cleanliness = Column(String(50), nullable=True)
+    damage_charges = Column(String(50), nullable=True)
+    damage_notes = Column(Text, nullable=True)
+
+    created_by = Column(Integer, nullable=True)
+
+
+class FleetPcn(Base, AuditStampMixin, AuditByMixin):
+    """Penalty Charge Notice details for a hire file."""
+    __tablename__ = "fleet_pcn"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hire_id = Column(Integer, ForeignKey("fleet_hire.id", ondelete="CASCADE"), index=True, nullable=False)
+    tenant_id = Column(Integer, index=True, nullable=True)
+
+    council_name = Column(String(200), nullable=True)
+    council_address = Column(Text, nullable=True)
+    council_postcode = Column(String(20), nullable=True)
+    pcn_number = Column(String(100), nullable=True)
+    offence_date = Column(Date, nullable=True)
+    pcn_status = Column(String(100), nullable=True)
+    liability_transfer_status = Column(String(100), nullable=True)
+    response_deadline = Column(Date, nullable=True)
+
+
+class FleetPcnDocument(Base, AuditStampMixin):
+    """Document attached to a PCN record."""
+    __tablename__ = "fleet_pcn_document"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pcn_id = Column(Integer, ForeignKey("fleet_pcn.id", ondelete="CASCADE"), index=True, nullable=False)
+    doc_type = Column(String(100), nullable=False)
+    filename = Column(String(300), nullable=True)
+    s3_key = Column(String(500), nullable=True)
+    file_url = Column(Text, nullable=True)
+    storage_backend = Column(String(50), nullable=True)
+    received_on = Column(Date, nullable=True)
+    created_by = Column(Integer, nullable=True)
+    uploaded_by = Column(String(200), nullable=True)
+
+
+class FleetPcnNote(Base, AuditStampMixin):
+    """Notes on the PCN screen."""
+    __tablename__ = "fleet_pcn_note"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pcn_id = Column(Integer, ForeignKey("fleet_pcn.id", ondelete="CASCADE"), index=True, nullable=False)
+    note = Column(Text, nullable=False)
+    created_by = Column(Integer, nullable=True)
+    created_by_name = Column(String(200), nullable=True)
+
+
+class FleetPcnReminder(Base, AuditStampMixin):
+    """Reminder date/time rows for PCN deadlines."""
+    __tablename__ = "fleet_pcn_reminder"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pcn_id = Column(Integer, ForeignKey("fleet_pcn.id", ondelete="CASCADE"), index=True, nullable=False)
+    reminder_type = Column(String(100), nullable=False)
+    reminder_date = Column(Date, nullable=True)
+    reminder_time = Column(String(10), nullable=True)
     created_by = Column(Integer, nullable=True)

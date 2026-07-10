@@ -42,6 +42,39 @@ class HireUpdate(BaseModel):
     phone_consent: Optional[str] = None
     postal_consent: Optional[str] = None
     reason_for_withdrawal: Optional[str] = None
+    # Hire Vehicle Details (screen 5)
+    vehicle_cost_per_week: Optional[str] = None
+    deposit: Optional[str] = None
+    borough: Optional[str] = None
+    registration_number: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    transmission: Optional[str] = None
+    hire_status: Optional[str] = None
+    swap_car: Optional[str] = None
+    swap_reason: Optional[str] = None
+    swap_reason_text: Optional[str] = None
+    hire_start_date: Optional[date] = None
+    hire_end_date: Optional[date] = None
+    total_hire_period: Optional[str] = None
+    hire_insurance_type: Optional[str] = None
+    insurance_date_received: Optional[date] = None
+    policy_start_date: Optional[date] = None
+    policy_end_date: Optional[date] = None
+    cross_hire_provider_name: Optional[str] = None
+    cross_hire_contact_details: Optional[str] = None
+    cross_hire_rate: Optional[str] = None
+    payment_hire_start_date: Optional[date] = None
+    payment_hire_end_date: Optional[date] = None
+    vehicle_cost_per_day: Optional[str] = None
+    number_of_weekly_payments: Optional[str] = None
+    payment_day: Optional[date] = None
+    security_deposit: Optional[str] = None
+    weekly_hire_payment: Optional[str] = None
+    total_planned_hire_cost: Optional[str] = None
+    initial_amount_due: Optional[str] = None
+    payment_damage_charges: Optional[str] = None
+    additional_charges: Optional[str] = None
 
 
 class HireDocumentResponse(BaseModel):
@@ -50,7 +83,20 @@ class HireDocumentResponse(BaseModel):
     filename: Optional[str] = None
     file_url: Optional[str] = None
     received_on: Optional[date] = None
+    created_at: Optional[datetime] = None
     extracted_address: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class HireAuditResponse(BaseModel):
+    id: int
+    user: Optional[str] = None
+    field_changed: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    changed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -59,6 +105,7 @@ class HireDocumentResponse(BaseModel):
 class HireResponse(BaseModel):
     id: int
     tenant_id: Optional[int] = None
+    fleet_reference: Optional[str] = None
     file_opened_at: Optional[datetime] = None
     file_closed_at: Optional[datetime] = None
     insurance_type: Optional[str] = None
@@ -91,6 +138,139 @@ class HireResponse(BaseModel):
     phone_consent: Optional[str] = None
     postal_consent: Optional[str] = None
     reason_for_withdrawal: Optional[str] = None
+    vehicle_cost_per_week: Optional[str] = None
+    deposit: Optional[str] = None
+    borough: Optional[str] = None
+    registration_number: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    transmission: Optional[str] = None
+    hire_status: Optional[str] = None
+    swap_car: Optional[str] = None
+    swap_reason: Optional[str] = None
+    swap_reason_text: Optional[str] = None
+    hire_start_date: Optional[date] = None
+    hire_end_date: Optional[date] = None
+    total_hire_period: Optional[str] = None
+    hire_insurance_type: Optional[str] = None
+    insurance_date_received: Optional[date] = None
+    policy_start_date: Optional[date] = None
+    policy_end_date: Optional[date] = None
+    cross_hire_provider_name: Optional[str] = None
+    cross_hire_contact_details: Optional[str] = None
+    cross_hire_rate: Optional[str] = None
+    payment_hire_start_date: Optional[date] = None
+    payment_hire_end_date: Optional[date] = None
+    vehicle_cost_per_day: Optional[str] = None
+    number_of_weekly_payments: Optional[str] = None
+    payment_day: Optional[date] = None
+    security_deposit: Optional[str] = None
+    weekly_hire_payment: Optional[str] = None
+    total_planned_hire_cost: Optional[str] = None
+    initial_amount_due: Optional[str] = None
+    payment_damage_charges: Optional[str] = None
+    additional_charges: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleUpdate(BaseModel):
+    """Partial update for one hire vehicle (field-level save)."""
+    vehicle_cost_per_week: Optional[str] = None
+    deposit: Optional[str] = None
+    borough: Optional[str] = None
+    registration_number: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    transmission: Optional[str] = None
+    hire_status: Optional[str] = None
+    swap_car: Optional[str] = None
+    swap_reason: Optional[str] = None
+    swap_reason_text: Optional[str] = None
+    hire_start_date: Optional[date] = None
+    hire_end_date: Optional[date] = None
+    total_hire_period: Optional[str] = None
+    hire_insurance_type: Optional[str] = None
+    insurance_date_received: Optional[date] = None
+    policy_start_date: Optional[date] = None
+    policy_end_date: Optional[date] = None
+    cross_hire_provider_name: Optional[str] = None
+    cross_hire_contact_details: Optional[str] = None
+    cross_hire_rate: Optional[str] = None
+    mileage_start: Optional[str] = None
+    mileage_end: Optional[str] = None
+    checkout_date: Optional[date] = None
+    checkout_time: Optional[str] = None
+    checkout_cleanliness: Optional[str] = None
+    damage_charges: Optional[str] = None
+    damage_notes: Optional[str] = None
+
+
+class VehicleResponse(VehicleUpdate):
+    id: int
+    hire_id: int
+    position: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PcnUpdate(BaseModel):
+    council_name: Optional[str] = None
+    council_address: Optional[str] = None
+    council_postcode: Optional[str] = None
+    pcn_number: Optional[str] = None
+    offence_date: Optional[date] = None
+    pcn_status: Optional[str] = None
+    liability_transfer_status: Optional[str] = None
+    response_deadline: Optional[date] = None
+
+
+class PcnResponse(PcnUpdate):
+    id: int
+    hire_id: int
+    tenant_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PcnDocumentResponse(BaseModel):
+    id: int
+    doc_type: str
+    filename: Optional[str] = None
+    file_url: Optional[str] = None
+    received_on: Optional[date] = None
+    uploaded_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PcnNoteCreate(BaseModel):
+    note: str
+
+
+class PcnNoteResponse(BaseModel):
+    id: int
+    note: str
+    created_by_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PcnReminderUpdate(BaseModel):
+    reminder_date: Optional[date] = None
+    reminder_time: Optional[str] = None
+
+
+class PcnReminderResponse(PcnReminderUpdate):
+    id: int
+    reminder_type: str
 
     class Config:
         from_attributes = True

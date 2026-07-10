@@ -14,7 +14,7 @@ from libdata.models.tables import (
 )
 from libdata.settings import get_session
 from libauth.auth import authenticate
-from appflow.utils import get_tenant_id, actor_id
+from appflow.utils import get_tenant_id, actor_id, handler_name_for_user
 from appflow.services.s3_service import S3Service
 
 __all__ = [
@@ -26,5 +26,6 @@ __all__ = [
     "authenticate",
     "get_tenant_id",
     "actor_id",
+    "handler_name_for_user",
     "S3Service",
 ]

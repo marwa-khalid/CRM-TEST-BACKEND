@@ -1,88 +1,115 @@
-"""Fleet hire service. Self-contained: does not import any Claims services, only
-shared infra (DB models, S3Service)."""
-from datetime import date
+"""Core Fleet hire service.
+
+This covers the base hire file used by General Details, Driver Details, GDPR,
+and the shared field-level audit log. Screen-specific work lives in sibling
+services such as document_service, vehicle_service, and pcn_service.
+"""
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from fleet.models.tables import FleetHire, FleetHireDocument
-from fleet.deps import S3Service
+from fleet.models.tables import FleetHire, FleetHireAudit
+from fleet.services.common import actor_name_for, get_hire_or_404, norm
+
+
+def _surname_from(name: Optional[str]) -> str:
+    """Last word of the driver's name (Screen 2) — used as the reference prefix."""
+    parts = (name or "").strip().split()
+    return parts[-1] if parts else ""
+
+
+def _reference_for(hire: FleetHire) -> str:
+    # `FLT-YYYYMM-{id}` on creation (Screen 1); once the driver's surname is
+    # known (Screen 2) the FLT prefix is replaced by the surname.
+    reference_date = hire.file_opened_at or hire.created_at or datetime.now(timezone.utc)
+    prefix = _surname_from(hire.driver_name).upper() or "FLT"
+    return f"{prefix}-{reference_date:%Y%m}-{hire.id:03d}"
+
+
+def _ensure_reference(hire: FleetHire) -> bool:
+    """Keep the reference in sync with the current surname (empty until Screen 2)."""
+    new_ref = _reference_for(hire)
+    if hire.fleet_reference == new_ref:
+        return False
+    hire.fleet_reference = new_ref
+    return True
 
 
 def create_hire(db: Session, tenant_id: Optional[int], actor_id: Optional[int]) -> FleetHire:
     hire = FleetHire(tenant_id=tenant_id, created_by=actor_id, updated_by=actor_id)
     db.add(hire)
+    db.flush()
+    _ensure_reference(hire)
     db.commit()
     db.refresh(hire)
     return hire
 
 
-def _get_hire_or_404(db: Session, hire_id: int, tenant_id: Optional[int]) -> FleetHire:
-    q = db.query(FleetHire).filter(FleetHire.id == hire_id, FleetHire.is_deleted.isnot(True))
+def list_hires(db: Session, tenant_id: Optional[int]):
+    query = db.query(FleetHire).filter(FleetHire.is_deleted.isnot(True))
     if tenant_id is not None:
-        q = q.filter(FleetHire.tenant_id == tenant_id)
-    hire = q.first()
-    if not hire:
-        raise HTTPException(status_code=404, detail="Hire not found")
-    return hire
+        query = query.filter(FleetHire.tenant_id == tenant_id)
+    hires = query.order_by(FleetHire.id.desc()).all()
+    changed = False
+    for hire in hires:
+        changed = _ensure_reference(hire) or changed
+    if changed:
+        db.commit()
+    return hires
+
+
+def delete_hire(db: Session, hire_id: int, tenant_id: Optional[int]) -> dict:
+    """Soft-delete a hire so it drops off the main list."""
+    hire = get_hire_or_404(db, hire_id, tenant_id)
+    hire.is_deleted = True
+    db.commit()
+    return {"success": True}
 
 
 def get_hire(db: Session, hire_id: int, tenant_id: Optional[int]) -> FleetHire:
-    return _get_hire_or_404(db, hire_id, tenant_id)
+    hire = get_hire_or_404(db, hire_id, tenant_id)
+    if _ensure_reference(hire):
+        db.commit()
+        db.refresh(hire)
+    return hire
 
 
 def update_hire(db: Session, hire_id: int, tenant_id: Optional[int], actor_id: Optional[int], data: dict) -> FleetHire:
-    """Apply a partial update (field-level save)."""
-    hire = _get_hire_or_404(db, hire_id, tenant_id)
+    """Apply a partial update and log each changed field."""
+    hire = get_hire_or_404(db, hire_id, tenant_id)
+    _ensure_reference(hire)
+    user_name = actor_name_for(db, actor_id)
+
     for key, value in data.items():
-        if hasattr(hire, key):
-            setattr(hire, key, value)
+        if not hasattr(hire, key):
+            continue
+        old = getattr(hire, key)
+        if norm(old) == norm(value):
+            continue
+        db.add(FleetHireAudit(
+            hire_id=hire_id,
+            user=user_name,
+            field_changed=key,
+            old_value=norm(old),
+            new_value=norm(value),
+        ))
+        setattr(hire, key, value)
+
+    # Re-sync the reference now that the driver name (surname) may have changed.
+    _ensure_reference(hire)
     hire.updated_by = actor_id
     db.commit()
     db.refresh(hire)
     return hire
 
 
-def add_document(db: Session, hire_id: int, tenant_id: Optional[int], actor_id: Optional[int],
-                 doc_type: str, file: UploadFile) -> FleetHireDocument:
-    _get_hire_or_404(db, hire_id, tenant_id)
-    result = S3Service().upload_task_attachment_with_fallback(file)
-    doc = FleetHireDocument(
-        hire_id=hire_id,
-        doc_type=doc_type,
-        filename=getattr(file, "filename", None),
-        s3_key=result.get("s3_key"),
-        file_url=result.get("file_url"),
-        storage_backend=result.get("storage_backend"),
-        received_on=date.today(),
-        created_by=actor_id,
-    )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
-    return doc
-
-
-def list_documents(db: Session, hire_id: int, tenant_id: Optional[int]):
-    _get_hire_or_404(db, hire_id, tenant_id)
+def list_audit(db: Session, hire_id: int, tenant_id: Optional[int]):
+    """Newest-first change log for a hire."""
+    get_hire_or_404(db, hire_id, tenant_id)
     return (
-        db.query(FleetHireDocument)
-        .filter(FleetHireDocument.hire_id == hire_id)
-        .order_by(FleetHireDocument.id)
+        db.query(FleetHireAudit)
+        .filter(FleetHireAudit.hire_id == hire_id)
+        .order_by(FleetHireAudit.id.desc())
         .all()
     )
-
-
-def delete_document(db: Session, hire_id: int, tenant_id: Optional[int], doc_id: int) -> dict:
-    _get_hire_or_404(db, hire_id, tenant_id)
-    doc = (
-        db.query(FleetHireDocument)
-        .filter(FleetHireDocument.id == doc_id, FleetHireDocument.hire_id == hire_id)
-        .first()
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    db.delete(doc)
-    db.commit()
-    return {"success": True}
