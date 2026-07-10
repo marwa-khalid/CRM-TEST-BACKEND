@@ -20,7 +20,10 @@ import tempfile
 from pdf2image import convert_from_path
 from appflow.services.s3_service import S3Service
 from libdata.models.tables import CaseDocument
-from appflow.services.google_vision_auth import configure_google_vision_credentials
+from appflow.services.google_vision_auth import (
+    configure_google_vision_credentials,
+    ocr_image_with_api_key,
+)
 
 configure_google_vision_credentials()
 client = vision.ImageAnnotatorClient()
@@ -49,29 +52,15 @@ def _history_base_dir():
 
 # ---------- Google Vision OCR Functions ----------
 def extract_text_with_tesseract(image_path: str) -> str:
-    """Fallback OCR using local Tesseract when Google Vision is unavailable."""
+    """Fallback OCR using local Tesseract when Google Vision is unavailable.
+
+    Kept identical to the engineer screen's approach (a plain full-image read)
+    rather than layout-specific cropping, which was tuned for one V5C layout
+    and mangled others.
+    """
     try:
         with Image.open(image_path) as img:
-            gray = ImageOps.grayscale(img.convert("RGB"))
-
-        def prepare(crop):
-            crop = ImageOps.autocontrast(crop)
-            crop = ImageEnhance.Contrast(crop).enhance(1.8)
-            return crop.resize((crop.width * 4, crop.height * 4))
-
-        width, height = gray.size
-        crops = [
-            gray,
-            gray.crop((0, 0, width, int(height * 0.62))),
-            gray.crop((0, 0, int(width * 0.55), int(height * 0.70))),
-        ]
-
-        parts = []
-        for crop in crops:
-            text = pytesseract.image_to_string(prepare(crop), config="--psm 6")
-            if text.strip():
-                parts.append(text)
-        return "\n".join(parts)
+            return pytesseract.image_to_string(img)
     except Exception as exc:
         print(f"Warning: Local OCR failed for {image_path}: {exc}")
         return ""
@@ -97,6 +86,12 @@ def extract_text_with_local_fallbacks(image_path: str) -> str:
 
 def extract_text_from_image_vision(image_path: str) -> str:
     """Extract raw text from a single image using Google Vision OCR with graceful fallback."""
+    # Prefer the REST API-key path when GOOGLE_VISION_API_KEY is set. An API key
+    # works even when the org blocks service-account keys; returns None on
+    # miss/error so we fall through to the client library then local OCR.
+    api_text = ocr_image_with_api_key(image_path)
+    if api_text and api_text.strip():
+        return api_text
     try:
         with io.open(image_path, "rb") as image_file:
             content = image_file.read()
@@ -315,16 +310,6 @@ def extract_vehicle_details_from_text(full_text: str):
 
     if not full_text or not full_text.strip():
         return fields
-
-    # Prefer the LLM extractor (robust across V5C layouts); fall back to the
-    # regex parsing below if it's unavailable or can't extract anything.
-    try:
-        from appflow.services.llm_extractor import extract_vehicle_fields_llm
-        _llm = extract_vehicle_fields_llm(full_text)
-        if _llm:
-            return {**fields, **_llm}
-    except Exception as _exc:  # pylint: disable=broad-exception-caught
-        print(f"LLM vehicle extraction error, using regex fallback: {_exc}")
 
     # Normalize
     single_line = re.sub(r"\s+", " ", full_text).strip()

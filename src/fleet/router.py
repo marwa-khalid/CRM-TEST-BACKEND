@@ -4,14 +4,29 @@ from typing import List
 from fastapi import APIRouter, Depends, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
-from libdata.settings import get_session
-from libauth.auth import authenticate
-from appflow.utils import get_tenant_id, actor_id
-from appflow.models.fleet import HireUpdate, HireResponse, HireDocumentResponse
-from appflow.services import fleet_service
+from fleet.deps import get_session
+from fleet.deps import authenticate
+from fleet.deps import get_tenant_id, actor_id
+from fleet.models.schemas import HireUpdate, HireResponse, HireDocumentResponse
+from fleet.services import hire_service as fleet_service
+from fleet.services import ocr as fleet_ocr
 
 # authenticate populates request.state (tenant_id/user_id) that the deps below read.
 fleet_router = APIRouter(prefix="/fleet", tags=["Fleet"], dependencies=[Depends(authenticate)])
+
+
+@fleet_router.post("/ocr/driving-licence")
+async def ocr_driving_licence_route(file: UploadFile = File(...)):
+    """OCR a driving-licence image/PDF -> driver fields (self-contained, free)."""
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    return fleet_ocr.parse_driving_licence(text)
+
+
+@fleet_router.post("/ocr/proof-of-address")
+async def ocr_proof_of_address_route(file: UploadFile = File(...)):
+    """OCR a proof-of-address (utility bill) image/PDF -> {address, postcode}."""
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    return fleet_ocr.parse_proof_of_address(text)
 
 
 @fleet_router.post("/hire", response_model=HireResponse)

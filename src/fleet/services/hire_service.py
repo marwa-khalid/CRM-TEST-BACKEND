@@ -6,8 +6,8 @@ from typing import Optional
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from libdata.models.fleet_tables import FleetHire, FleetHireDocument
-from appflow.services.s3_service import S3Service
+from fleet.models.tables import FleetHire, FleetHireDocument
+from fleet.deps import S3Service
 
 
 def create_hire(db: Session, tenant_id: Optional[int], actor_id: Optional[int]) -> FleetHire:

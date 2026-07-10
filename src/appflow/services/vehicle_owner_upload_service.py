@@ -18,7 +18,10 @@ from google.cloud import vision
 from dateutil import parser as dateparser
 import tempfile
 import pytesseract
-from appflow.services.google_vision_auth import configure_google_vision_credentials
+from appflow.services.google_vision_auth import (
+    configure_google_vision_credentials,
+    ocr_image_with_api_key,
+)
 
 configure_google_vision_credentials()
 client = vision.ImageAnnotatorClient()
@@ -46,29 +49,15 @@ def _history_base_dir():
     return os.path.abspath(os.path.join(os.getcwd(), "uploads", "history"))
 # ---------- Google Vision OCR Functions ----------
 def extract_text_with_tesseract(image_path: str) -> str:
-    """Fallback OCR using local Tesseract when Google Vision is unavailable."""
+    """Fallback OCR using local Tesseract when Google Vision is unavailable.
+
+    Kept identical to the engineer screen's approach (a plain full-image read)
+    rather than layout-specific cropping, which was tuned for one V5C layout
+    and mangled others.
+    """
     try:
         with Image.open(image_path) as img:
-            gray = ImageOps.grayscale(img.convert("RGB"))
-
-        def prepare(crop):
-            crop = ImageOps.autocontrast(crop)
-            crop = ImageEnhance.Contrast(crop).enhance(1.8)
-            return crop.resize((crop.width * 4, crop.height * 4))
-
-        width, height = gray.size
-        crops = [
-            gray,
-            gray.crop((0, 0, width, int(height * 0.62))),
-            gray.crop((int(width * 0.35), int(height * 0.08), width, int(height * 0.38))),
-        ]
-
-        parts = []
-        for crop in crops:
-            text = pytesseract.image_to_string(prepare(crop), config="--psm 6")
-            if text.strip():
-                parts.append(text)
-        return "\n".join(parts)
+            return pytesseract.image_to_string(img)
     except Exception as exc:
         print(f"Warning: Local OCR failed for {image_path}: {exc}")
         return ""
@@ -92,6 +81,12 @@ def extract_text_with_local_fallbacks(image_path: str) -> str:
     return extract_text_with_easyocr(image_path)
 def extract_text_from_image_vision(image_path: str) -> str:
     """Extract raw text from a single image using Google Vision OCR."""
+    # Prefer the REST API-key path when GOOGLE_VISION_API_KEY is set. An API key
+    # works even when the org blocks service-account keys; returns None on
+    # miss/error so we fall through to the client library then local OCR.
+    api_text = ocr_image_with_api_key(image_path)
+    if api_text and api_text.strip():
+        return api_text
     try:
         with io.open(image_path, "rb") as image_file:
             content = image_file.read()
@@ -255,16 +250,6 @@ def extract_owner_data(text: str):
         "email": "",
     }
 
-    # Prefer the LLM extractor (robust across V5C layouts); fall back to the
-    # regex parsing below if it's unavailable or can't extract anything.
-    try:
-        from appflow.services.llm_extractor import extract_owner_fields_llm
-        _llm = extract_owner_fields_llm(text)
-        if _llm:
-            return {**fields, **_llm}
-    except Exception as _exc:  # pylint: disable=broad-exception-caught
-        print(f"LLM owner extraction error, using regex fallback: {_exc}")
-
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     if not lines:
         return fields
@@ -274,18 +259,12 @@ def extract_owner_data(text: str):
     def clean_label_noise(value: str) -> str:
         value = re.sub(r"\b(?:Registration|number|nurnber|Document reference number)\b", " ", value, flags=re.IGNORECASE)
         value = re.sub(r"\b[A-Z]{1,2}\d{1,2}\s?[A-Z]{3}\b", " ", value, flags=re.IGNORECASE)
-        value = re.sub(r"\bCHOUD(?:O|M|H)?RY\b", "CHOUDHRY", value, flags=re.IGNORECASE)
-        value = re.sub(r"\bCHOUDH?FY\b", "CHOUDHRY", value, flags=re.IGNORECASE)
         value = re.sub(r"\s+", " ", value).strip(" ,:;-")
         return value
 
     def normalize_postcode(value: str) -> str:
-        value = value.upper().replace(" ", "")
-        value = value.replace("O", "0")
-        if re.match(r"^[68]16", value):
-            value = "B" + value[1:]
-        value = value.replace("AR", "8RP").replace("ANE", "8RP").replace("BRP", "8RP")
-        match = re.search(r"([A-Z]{1,2}\d{1,2}[A-Z]?)(\d[A-Z]{2})", value)
+        compact = value.upper().replace(" ", "")
+        match = re.search(r"([A-Z]{1,2}\d{1,2}[A-Z]?)(\d[A-Z]{2})", compact)
         if match:
             return f"{match.group(1)} {match.group(2)}"
         return ""
@@ -306,94 +285,89 @@ def extract_owner_data(text: str):
             break
     fields["postcode"] = postcode if postcode else ""
 
-    # 2. Find company/owner name. V5C registered keeper blocks often OCR as
-    # "Registration CHOUDHRY INVESTMENTS LTD" or split the company over lines.
-    owner_line = None
+    # 2. Registered-keeper block: the contiguous run of short, non-label lines
+    # ending just above the postcode. On a V5C this reads as:
+    #     NAME / <address line(s)> / POSTCODE
+    # so the first name-like line is the keeper and the lines below it are the
+    # address. (This section used to be hardcoded to one sample document.)
+    STREET_KW = re.compile(
+        r"\b(ROAD|RD|STREET|ST|LANE|LN|AVENUE|AVE|CLOSE|COURT|CT|CRESCENT|DRIVE|DR|"
+        r"WAY|PLACE|PL|TERRACE|GARDENS|GROVE|WALK|HILL|PARK|SQUARE|SQ|ROW|MEWS|VIEW|"
+        r"RISE|HOUSE|FLAT|APARTMENT|APT)\b",
+        re.IGNORECASE,
+    )
+    LABEL_RE = re.compile(
+        r"(REGISTER|KEEPER|DOCUMENT|REFERENCE|BUYER|BEWARE|SELLING|CONTACT|SURNAME|"
+        r"FIRST\s*NAME|DVLA|SECTION|DECLARATION|SIGNATURE|SPECIAL|\bMAKE\b|\bMODEL\b)",
+        re.IGNORECASE,
+    )
+
+    def looks_like_name(value: str) -> bool:
+        if not value or any(ch.isdigit() for ch in value) or STREET_KW.search(value):
+            return False
+        return 1 <= len(value.split()) <= 4
+
+    def strip_title(value: str):
+        m = re.match(r"^\s*(MR|MRS|MISS|MS|DR)\.?\s+(.*)$", value, re.IGNORECASE)
+        return (m.group(1).lower(), m.group(2).strip()) if m else ("", value)
+
+    block = []
+    if postcode and postcode_index > 0:
+        for j in range(postcode_index - 1, -1, -1):
+            line = lines[j]
+            if re.fullmatch(r"\d[\d_]{5,}[A-Za-z]?", line):  # DVLA reference/barcode number
+                break
+            if LABEL_RE.search(line):
+                break
+            if re.search(r"\d{1,2}[/. ]\d{1,2}[/. ]\d{2,4}", line):  # a date
+                break
+            if len(line.split()) > 7:  # a sentence, not an address line
+                break
+            block.insert(0, line)
+            if len(block) >= 4:  # name + up to 3 address lines
+                break
+
     owner_name = ""
-    for line in lines:
-        company_match = re.search(
-            r"([A-Z][A-Z0-9&.,' -]{2,}?\s+(?:LTD|LIMITED|PLC|LLP))\b",
-            line,
-            re.IGNORECASE,
-        )
-        if company_match:
-            owner_line = clean_label_noise(company_match.group(1)).title()
+    address_lines = list(block)
+
+    # A company keeper (LTD/LIMITED/PLC/LLP) takes precedence over a personal name.
+    company_idx = None
+    for k, l in enumerate(block):
+        cm = re.search(r"[A-Za-z][A-Za-z0-9&.,' -]*?\s+(?:LTD|LIMITED|PLC|LLP)\b", l, re.IGNORECASE)
+        if cm:
+            owner_name = clean_label_noise(cm.group(0)).title()
+            company_idx = k
             break
-
-    if owner_line:
-        owner_name = owner_line
+    if company_idx is not None:
+        address_lines = [l for i, l in enumerate(block) if i != company_idx]
     else:
-        company_match = re.search(
-            r"([A-Z][A-Z0-9&.,' -]{2,}?\s+(?:LTD|LIMITED|PLC|LLP))\b",
-            single_line,
-            re.IGNORECASE,
-        )
-        if company_match:
-            owner_name = clean_label_noise(company_match.group(1)).title()
+        # First name-like line in the block is the keeper; rest is the address.
+        for k, cand in enumerate(block):
+            gender, core = strip_title(cand)
+            if looks_like_name(core):
+                owner_name = core
+                fields["gender"] = gender
+                address_lines = block[k + 1:]
+                break
 
-    if owner_name:
-        name_parts = owner_name.split(" ", 1)
-        fields["first_name"] = name_parts[0]
-        fields["surname"] = name_parts[1] if len(name_parts) > 1 else ""
-        fields["payment_benificiary"] = owner_name
-    else:
+    if not owner_name:
+        # Fallback: a titled name anywhere in the document text.
         personal_match = re.search(
-            r"\b(?:Mr|Mrs|Miss|Ms|Dr)\.?\s+([A-Z][A-Za-z'-]+)\s+([A-Z][A-Za-z'-]+)\b",
-            text,
+            r"\b(?:Mr|Mrs|Miss|Ms|Dr)\.?\s+([A-Z][A-Za-z'-]+)\s+([A-Z][A-Za-z'-]+)\b", text
         )
         if personal_match:
-            fields["first_name"] = personal_match.group(1)
-            fields["surname"] = personal_match.group(2)
+            owner_name = f"{personal_match.group(1)} {personal_match.group(2)}"
             fields["gender"] = personal_match.group(0).split()[0].lower().rstrip(".")
-            fields["payment_benificiary"] = f"{fields['first_name']} {fields['surname']}"
 
-    # 3. Collect address: continuous block just before postcode
-    address_lines = []
-    if postcode and postcode_index > 0:
-        for j in range(postcode_index - 1, -1, -1):  # walk upwards
-            line = lines[j]
-            # Stop if line looks like a date or a sentence
-            if re.search(r"\d{1,2}\s?\d{1,2}\s?\d{2,4}", line):  # date
-                break
-            if len(line.split()) > 6:  # too many words → likely a sentence
-                break
-            address_lines.insert(0, line)  # prepend
+    if owner_name:
+        name_parts = owner_name.split()
+        fields["first_name"] = name_parts[0].title()
+        fields["surname"] = " ".join(name_parts[1:]).title() if len(name_parts) > 1 else ""
+        fields["payment_benificiary"] = owner_name.title()
 
-    # Clean address: join lines into one, remove extra spaces
-    clean_address = " ".join(address_lines)
-    clean_address = re.sub(r"\s{2,}", " ", clean_address).strip()
-
-    address_candidates = []
-    for idx, line in enumerate(lines):
-        normal_line = line.upper().replace("WNCENT", "VINCENT").replace("ST_", "ST ")
-        if "VINCENT" not in normal_line:
-            continue
-
-        parts = [line]
-        for next_line in lines[idx + 1: idx + 4]:
-            upper_next = next_line.upper()
-            if re.search(r"(DOCUMENT REFERENCE|BUYER BEWARE|NEW UK ADDRESS|FIRST AND|SURNAME|CONTACT|4 SELLING)", upper_next):
-                break
-            if len(next_line.split()) <= 4 or re.search(r"(BIRMINGHAM|BAM|BRMINGHAM|B16|616|816)", upper_next):
-                parts.append(next_line)
-        candidate = " ".join(parts)
-        candidate = clean_label_noise(candidate)
-        candidate = candidate.replace("WNCENT", "VINCENT").replace("ST_", "ST ")
-        candidate = re.sub(r"\b(?:BAM\s*NGM|BARMNGHAM|BRMINGHAM)\b", "BIRMINGHAM", candidate, flags=re.IGNORECASE)
-        candidate = re.sub(r"\b[68]16\s*(?:AR|ANE|BRP|ERP|RP)?\b", "B16 8RP", candidate, flags=re.IGNORECASE)
-        candidate = re.sub(r"\s{2,}", " ", candidate).strip(" ,:;-")
-        if candidate:
-            address_candidates.append(candidate)
-
-    if address_candidates:
-        clean_address = min(address_candidates, key=len)
-
-    clean_address = clean_address.replace("WNCENT", "VINCENT").replace("ST_", "ST ")
-    clean_address = re.sub(r"\b1?\s*SAO\s+ST\b", "210 ST", clean_address, flags=re.IGNORECASE)
-    clean_address = re.sub(r"\b(?:BAM\s*NGM|BARMNGHAM|BRMINGHAM)\b", "BIRMINGHAM", clean_address, flags=re.IGNORECASE)
-    clean_address = re.sub(r"\b[68]16\s*(?:AR|ANE|BRP|ERP|RP)?\b", "B16 8RP", clean_address, flags=re.IGNORECASE)
-    clean_address = re.sub(r"\s{2,}", " ", clean_address).strip(" ,:;-")
-
+    # 3. Address = the keeper-block lines below the name (up to the postcode).
+    clean_address = clean_label_noise(" ".join(address_lines))
+    clean_address = re.sub(r"\s{2,}", " ", clean_address).strip(" ,:;-").title()
     fields["address"] = clean_address
 
     return fields

@@ -63,6 +63,11 @@ root_router.include_router(vehicle_owner_router)
 
 root_router.include_router(engineer_router)
 
+# Status/result polling for the async vehicle/owner/engineer imports. Was imported
+# but never mounted, so every GET /import-jobs/{id}/status returned 404 and the
+# frontend could never see an import finish.
+root_router.include_router(import_job_router)
+
 root_router.include_router(router)
 
 root_router.include_router(loss_router)

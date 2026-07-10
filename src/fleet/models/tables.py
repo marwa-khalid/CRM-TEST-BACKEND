@@ -6,7 +6,7 @@ and cross-table FKs work.
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Date, Text
 from sqlalchemy.sql import func
 
-from libdata.models.tables import Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin
+from fleet.deps import Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin
 
 
 class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):

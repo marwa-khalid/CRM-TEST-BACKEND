@@ -9,7 +9,7 @@ load_dotenv()
 from appflow.router import authentication
 from appflow.router.root import root_router
 from appflow.router.vehicle_report_version import version_router
-from appflow.router.fleet import fleet_router
+from fleet.router import fleet_router
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
