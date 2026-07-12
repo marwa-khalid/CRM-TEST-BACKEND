@@ -17,7 +17,7 @@ from datetime import date
 from typing import Dict, List
 
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageOps
 
 try:  # PyMuPDF, only needed for PDF uploads
     import fitz
@@ -70,16 +70,46 @@ def _vision_api_key_ocr(image_bytes: bytes) -> str | None:
         return None
 
 
+def _preprocess(image_bytes: bytes) -> "Image.Image":
+    """Grayscale + autocontrast + upscale so Tesseract can read the small, busy
+    numbered fields on a photocard licence / utility bill."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    g = ImageOps.autocontrast(ImageOps.grayscale(img))
+    w, h = g.size
+    if max(w, h) < 1800:  # upscale small phone-camera shots
+        scale = 1800 / max(w, h)
+        g = g.resize((int(w * scale), int(h * scale)))
+    return g
+
+
+def _tesseract_text(image_bytes: bytes) -> str:
+    try:
+        g = _preprocess(image_bytes)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        print(f"Fleet image preprocess failed: {exc}")
+        try:
+            g = Image.open(io.BytesIO(image_bytes))
+        except Exception:  # pylint: disable=broad-exception-caught
+            return ""
+    # Try a couple of page-segmentation modes and keep whichever reads the most —
+    # licences (columned fields) and bills (blocks) prefer different modes.
+    best = ""
+    for cfg in ("--psm 6", "--psm 4", ""):
+        try:
+            t = pytesseract.image_to_string(g, config=cfg)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(f"Fleet local OCR failed ({cfg or 'default'}): {exc}")
+            continue
+        if len(t.strip()) > len(best.strip()):
+            best = t
+    return best
+
+
 def _image_bytes_to_text(image_bytes: bytes) -> str:
     api_text = _vision_api_key_ocr(image_bytes)
     if api_text and api_text.strip():
         return api_text
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            return pytesseract.image_to_string(img)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        print(f"Fleet local OCR failed: {exc}")
-        return ""
+    return _tesseract_text(image_bytes)
 
 
 def file_to_text(file_bytes: bytes, filename: str = "") -> str:
@@ -103,6 +133,10 @@ def file_to_text(file_bytes: bytes, filename: str = "") -> str:
 # --------------------------------------------------------------------------- #
 _POSTCODE = re.compile(r"\b([A-Z]{1,2}\d{1,2}[A-Z]?)\s*(\d[A-Z]{2})\b")
 _DATE = re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b")
+_LICENCE_NO = re.compile(r"\b([A-Z9]{4,5}\d{6}[A-Z0-9]{2,8})\b")
+# A UK licence line usually starts with its field marker: 1, 2, 3, 4a, 4b, 5, 8, 9…
+_FIELD_LINE = re.compile(r"^\s*(\d[a-dA-D]?)\s*[.)\]:]\s*(.*)$")
+_URL_TOKEN = re.compile(r"\S*(?:www\.|https?:|\.xyz|\.com|\.co\.uk)\S*", re.IGNORECASE)
 
 
 def _find_postcode(text: str) -> str:
@@ -124,12 +158,37 @@ def _all_dates(text: str) -> List[date]:
 # --------------------------------------------------------------------------- #
 # Parsers
 # --------------------------------------------------------------------------- #
-def parse_driving_licence(text: str) -> Dict[str, str]:
-    """Best-effort extraction of driver fields from a UK photocard licence.
+def _name_words(s: str) -> str:
+    """Title-cased alphabetic words only (drops stray OCR punctuation/digits)."""
+    return " ".join(w.title() for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", s))
 
-    Reliable: licence number, date of birth, postcode. Name/address are
-    best-effort (the numbered field labels OCR inconsistently) and are meant as
-    an editable auto-fill, not a guarantee.
+
+def _collect_licence_fields(lines: List[str]) -> Dict[str, str]:
+    """Group licence text by its numbered field markers (1, 2, 3, 4a, 4b, 5, 8, 9…).
+    A line with no leading marker is a continuation of the field above it (so a
+    multi-line address or a second forename stays attached to its field)."""
+    fields: Dict[str, List[str]] = {}
+    current = None
+    for line in lines:
+        m = _FIELD_LINE.match(line)
+        if m:
+            current = m.group(1).lower()
+            fields.setdefault(current, [])
+            val = m.group(2).strip()
+            if val:
+                fields[current].append(val)
+        elif current is not None:
+            fields[current].append(line.strip())
+    return {k: " ".join(v).strip() for k, v in fields.items()}
+
+
+def parse_driving_licence(text: str) -> Dict[str, str]:
+    """Extract driver fields from a UK photocard licence.
+
+    Anchors to the numbered field markers (1 surname, 2 forenames, 3 DOB,
+    4a issue, 4b expiry, 5 number, 8 address) so it generalises across licences,
+    and falls back to whole-text heuristics wherever a marker didn't OCR cleanly.
+    Meant as an editable auto-fill, not a guarantee.
     """
     result = {
         "name": "",
@@ -145,49 +204,70 @@ def parse_driving_licence(text: str) -> Dict[str, str]:
 
     upper = text.upper()
     lines = [l.strip() for l in text.splitlines() if l.strip()]
+    fields = _collect_licence_fields(lines)
 
-    # Field 5 — DVLA driver number: 4-5 letters, 6 digits, 3-7 alphanumerics.
-    m = re.search(r"\b([A-Z9]{4,5}\d{6}[A-Z0-9]{3,7})\b", upper)
+    # Name — field 1 (surname) + field 2 (forenames).
+    surname = _name_words(fields.get("1", ""))
+    forenames = _name_words(fields.get("2", ""))
+    result["name"] = " ".join(p for p in [forenames, surname] if p)
+
+    # Dates — anchored to their labels (3 = DOB, 4a = issue, 4b = expiry). Where a
+    # label didn't OCR, fall back to the sorted dates: DOB is the earliest and,
+    # among the rest, issue is the earliest and expiry the latest.
+    def _labelled(key: str):
+        ds = _all_dates(fields.get(key, ""))
+        return ds[0] if ds else None
+
+    dob, start, end = _labelled("3"), _labelled("4a"), _labelled("4b")
+    all_dates = sorted(set(_all_dates(text)))
+    if dob is None and all_dates:
+        dob = all_dates[0]
+    non_dob = [d for d in all_dates if d != dob]
+    if start is None and non_dob:
+        start = non_dob[0]
+    if end is None and non_dob:
+        end = non_dob[-1]
+    if dob:
+        result["dateOfBirth"] = dob.isoformat()
+    if start:
+        result["licenceStart"] = start.strftime("%d-%m-%Y")
+    if end:
+        result["licenceEnd"] = end.strftime("%d-%m-%Y")
+
+    # Licence number — field 5, else the DVLA-format search over the whole text,
+    # else the first long token on field 5 (handles all-digit template numbers).
+    m = _LICENCE_NO.search(fields.get("5", "").upper()) or _LICENCE_NO.search(upper)
     if m:
         result["drivingLicenceNumber"] = m.group(1)
+    elif fields.get("5"):
+        m2 = re.search(r"[A-Z0-9]{6,}", fields["5"].upper())
+        if m2:
+            result["drivingLicenceNumber"] = m2.group(0)
 
-    # Dates: earliest = DOB (field 3); latest = expiry (4b); the middle = issue (4a).
-    dates = sorted(set(_all_dates(text)))
-    if dates:
-        result["dateOfBirth"] = dates[0].isoformat()
-        if len(dates) >= 2:
-            result["licenceEnd"] = dates[-1].strftime("%d-%m-%Y")
-        if len(dates) >= 3:
-            result["licenceStart"] = dates[1].strftime("%d-%m-%Y")
-
-    result["postcode"] = _find_postcode(text)
-
-    # Fields 1 (surname) + 2 (first names), read from the numbered markers.
-    surname = firstnames = ""
-    for line in lines:
-        s = re.match(r"^1[.\s]+([A-Z][A-Z '\-]{1,})$", line.upper())
-        if s and not surname:
-            surname = s.group(1).strip()
-        f = re.match(r"^2[.\s]+([A-Z][A-Z '\-]{1,})$", line.upper())
-        if f and not firstnames:
-            firstnames = f.group(1).strip()
-    name = " ".join(p for p in [firstnames.title(), surname.title()] if p).strip()
-    result["name"] = name
-
-    # Field 8 — address: the postcode line + up to two short lines above it.
-    if result["postcode"]:
-        compact_pc = result["postcode"].replace(" ", "")
-        for i, line in enumerate(lines):
-            if compact_pc in line.upper().replace(" ", ""):
-                parts = []
-                for j in range(max(0, i - 2), i + 1):
-                    seg = re.sub(r"^8[.\s]+", "", lines[j])
-                    if _DATE.search(seg) or re.search(r"[A-Z9]{4,5}\d{6}", seg.upper()):
-                        continue
-                    parts.append(seg)
-                addr = re.sub(re.escape(result["postcode"]), "", " ".join(parts), flags=re.IGNORECASE)
-                result["address"] = re.sub(r"\s{2,}", " ", addr).strip(" ,").title()
-                break
+    # Address — field 8 block (does NOT require a postcode), else postcode-anchored.
+    addr_block = fields.get("8", "")
+    if addr_block:
+        postcode = _find_postcode(addr_block)
+        cleaned = _URL_TOKEN.sub("", addr_block)  # drop template URLs
+        if postcode:
+            cleaned = re.sub(re.escape(postcode), "", cleaned, flags=re.IGNORECASE)
+        result["postcode"] = postcode or _find_postcode(text)
+        result["address"] = re.sub(r"\s{2,}", " ", cleaned).strip(" ,.").title()
+    else:
+        result["postcode"] = _find_postcode(text)
+        if result["postcode"]:
+            compact_pc = result["postcode"].replace(" ", "")
+            for i, line in enumerate(lines):
+                if compact_pc in line.upper().replace(" ", ""):
+                    parts = []
+                    for j in range(max(0, i - 2), i + 1):
+                        seg = re.sub(r"^8[.\s]+", "", lines[j])
+                        if _DATE.search(seg) or re.search(r"[A-Z9]{4,5}\d{6}", seg.upper()):
+                            continue
+                        parts.append(seg)
+                    addr = re.sub(re.escape(result["postcode"]), "", " ".join(parts), flags=re.IGNORECASE)
+                    result["address"] = re.sub(r"\s{2,}", " ", addr).strip(" ,").title()
+                    break
     return result
 
 

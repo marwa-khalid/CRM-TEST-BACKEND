@@ -274,3 +274,25 @@ class PcnReminderResponse(PcnReminderUpdate):
 
     class Config:
         from_attributes = True
+
+
+class ScheduleSync(BaseModel):
+    count: int
+    due_amount: Optional[str] = None
+
+
+class PaymentUpdate(BaseModel):
+    week: Optional[int] = None
+    due_amount: Optional[str] = None
+    status: Optional[str] = None
+    paid_amount: Optional[str] = None
+    payment_date: Optional[date] = None
+    notes: Optional[str] = None
+
+
+class PaymentResponse(PaymentUpdate):
+    id: int
+    hire_id: int
+
+    class Config:
+        from_attributes = True

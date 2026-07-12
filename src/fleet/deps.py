@@ -16,6 +16,7 @@ from libdata.settings import get_session
 from libauth.auth import authenticate
 from appflow.utils import get_tenant_id, actor_id, handler_name_for_user
 from appflow.services.s3_service import S3Service
+from appflow.services.email_delivery import send_email
 
 __all__ = [
     "Base",
@@ -28,4 +29,5 @@ __all__ = [
     "actor_id",
     "handler_name_for_user",
     "S3Service",
+    "send_email",
 ]
