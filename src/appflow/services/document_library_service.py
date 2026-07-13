@@ -462,7 +462,7 @@ class DocumentLibraryService:
             if not api_key:
                 raise HTTPException(status_code=500, detail="Email is not configured")
             message = Mail(
-                from_email=os.getenv("SENDGRID_SENDER", "noreplynationwideassist@yopmail.com"),
+                from_email=os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com"),
                 to_emails=recipients,
                 subject=subject,
                 html_content=html,

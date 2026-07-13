@@ -91,13 +91,13 @@ def _send_email(recipients: list, subject: str, html_content: str):
         logger.warning("notify email skipped: SENDGRID_API_KEY not configured")
         return
     message = Mail(
-        from_email="No-Reply <noreplynationwideassist@yopmail.com>",  # Format: "Name <email>"
+        from_email="No-Reply <no-replynationwideassist@outlook.com>",  # Format: "Name <email>"
         to_emails=[To(email) for email in recipient_list],
         subject=subject,
         html_content=html_content,
     )
     # Explicitly tell mail clients where replies should NOT go
-    message.reply_to = ReplyTo("noreplynationwideassist@yopmail.com", "No-Reply")
+    message.reply_to = ReplyTo("no-replynationwideassist@outlook.com", "No-Reply")
     # Inline logo so cid:companylogo renders on the SendGrid fallback path too.
     if LOGO_ENCODED and "cid:companylogo" in (html_content or ""):
         message.add_attachment(Attachment(

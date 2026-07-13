@@ -58,9 +58,11 @@ class GraphEmailService:
     def is_configured() -> bool:
         """True if we have credentials to obtain a delegated Graph token."""
         return bool(
-            os.getenv("MS_GRAPH_REFRESH_TOKEN")
-            or os.getenv("OUTLOOK_REFRESH_TOKEN")
-            or os.getenv("OUTLOOK_ACCESS_TOKEN")
+            os.getenv("MS_GRAPH_SEND_REFRESH_TOKEN")
+            or os.getenv("MS_GRAPH_EMAIL_REFRESH_TOKEN")
+            or os.getenv("OUTLOOK_SEND_REFRESH_TOKEN")
+            or os.getenv("MS_GRAPH_SEND_ACCESS_TOKEN")
+            or os.getenv("OUTLOOK_SEND_ACCESS_TOKEN")
         )
 
     @classmethod
@@ -91,7 +93,7 @@ class GraphEmailService:
             logger.warning("Graph send skipped: no valid recipients")
             return None
 
-        token = MicrosoftGraphTokenService.get_access_token()
+        token = MicrosoftGraphTokenService.get_access_token("send")
         if not token:
             logger.warning("Graph send skipped: no access token available")
             return None

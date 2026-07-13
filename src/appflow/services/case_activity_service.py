@@ -12,7 +12,7 @@ from libdata.models.tables import Claim, HistoryActivities, User, VehicleDamageA
 
 
 def _get_outlook_token(claim: Claim, db: Session) -> str:
-    return MicrosoftGraphTokenService.get_access_token()
+    return MicrosoftGraphTokenService.get_access_token("read")
 
 
 class CaseActivityService:

@@ -41,7 +41,7 @@ if os.path.exists(_PNG_LOGO_PATH):
         LOGO_PNG_B64 = base64.b64encode(_f.read()).decode()
 
 
-FROM_EMAIL = os.getenv("SENDGRID_SENDER", "noreplynationwideassist@yopmail.com")
+FROM_EMAIL = os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com")
 REPLY_TO_EMAIL = os.getenv("SENDGRID_REPLY_TO", FROM_EMAIL)
 
 

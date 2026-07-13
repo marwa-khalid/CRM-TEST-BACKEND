@@ -17,3 +17,10 @@ async def ocr_proof_of_address_route(file: UploadFile = File(...)):
     """OCR a proof-of-address image/PDF into address fields."""
     text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
     return fleet_ocr.parse_proof_of_address(text)
+
+
+@router.post("/ocr/insurance-certificate")
+async def ocr_insurance_certificate_route(file: UploadFile = File(...)):
+    """OCR an insurance certificate into policy start/end dates."""
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    return fleet_ocr.parse_insurance_certificate(text)

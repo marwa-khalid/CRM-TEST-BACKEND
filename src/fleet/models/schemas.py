@@ -90,6 +90,13 @@ class HireDocumentResponse(BaseModel):
         from_attributes = True
 
 
+class GeneratedDocumentFileResponse(BaseModel):
+    key: str
+    filename: str
+    content_type: str
+    size: int
+
+
 class HireAuditResponse(BaseModel):
     id: int
     user: Optional[str] = None
@@ -296,3 +303,26 @@ class PaymentResponse(PaymentUpdate):
 
     class Config:
         from_attributes = True
+
+
+class DepositRefundRequest(BaseModel):
+    """Editable inputs for the structured deposit-refund email; the rest of the
+    data (ref, hirer, bank, hire dates, deposit) comes from the hire record."""
+    to: str
+    cc: Optional[str] = None
+    subject: Optional[str] = "Request Refund Deposit"
+    registration: Optional[str] = None
+    valeting_fee: Optional[str] = "0"
+    vehicle_damages: Optional[str] = None  # defaults to the hire's damage charges
+    excess_ppm: Optional[str] = "0"
+    hire_charges_unpaid: Optional[str] = "0"
+
+
+class PayHirerRequest(BaseModel):
+    """Editable inputs for the structured Pay/Reimburse Hirer email."""
+    to: str
+    cc: Optional[str] = None
+    subject: Optional[str] = None
+    amount: str
+    reason: str
+    registration: Optional[str] = None

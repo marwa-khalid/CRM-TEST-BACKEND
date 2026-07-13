@@ -298,7 +298,7 @@ def generate_deep_link_token(
 #         letter_encoded = base64.b64encode(letter_pdf).decode()
 
 #         message = Mail(
-#             from_email="proclaim@yopmail.com",
+#             from_email="no-replynationwideassist@outlook.com",
 #             to_emails=data.witness_email,
 #             subject="Questionnaire & Letter",
 #             html_content="Dear Witness,<br>Please find attached the questionnaire and letter."
@@ -325,7 +325,7 @@ def generate_deep_link_token(
 #         link = f"{frontend_url}/questionnaire?details={token}"
 
 #         message = Mail(
-#             from_email="proclaim@yopmail.com",
+#             from_email="no-replynationwideassist@outlook.com",
 #             to_emails=data.witness_email,
 #             subject="Secure Link to Questionnaire",
 #             html_content=f"""

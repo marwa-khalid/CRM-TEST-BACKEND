@@ -787,7 +787,7 @@ class HireVehicleProvidedService:
             """
 
         message = Mail(
-            from_email="proclaim@yopmail.com",
+            from_email="no-replynationwideassist@outlook.com",
             to_emails=receiver_email,
             subject=subject,
             html_content=html_body,
@@ -918,7 +918,7 @@ class HireVehicleProvidedService:
                 """
 
         message = Mail(
-            from_email="proclaim@yopmail.com",
+            from_email="no-replynationwideassist@outlook.com",
             to_emails=receiver_email,
             subject=subject,
             html_content=html_body,
@@ -1073,7 +1073,7 @@ class HireVehicleProvidedService:
                     """
 
         message = Mail(
-            from_email="proclaim@yopmail.com",
+            from_email="no-replynationwideassist@outlook.com",
             to_emails=receiver_email,
             subject=subject,
             html_content=html_body,
@@ -1217,7 +1217,7 @@ class HireVehicleProvidedService:
                         """
 
         message = Mail(
-            from_email="proclaim@yopmail.com",
+            from_email="no-replynationwideassist@outlook.com",
             to_emails=receiver_email,
             subject=subject,
             html_content=html_body,
@@ -1361,7 +1361,7 @@ class HireVehicleProvidedService:
             """
 
         message = Mail(
-            from_email="proclaim@yopmail.com",
+            from_email="no-replynationwideassist@outlook.com",
             to_emails=receiver_email,
             subject=f"Fee Exemption Form - Claim No:{our_reference}",
             html_content=html_content,
@@ -1795,7 +1795,7 @@ class HireVehicleProvidedService:
         #     raise HTTPException(status_code=404, detail=f"No email address found for client of claim ID {claim_id}")
 
         receiver_email = address.email
-        sender_email = "proclaim@yopmail.com"  # your sender email
+        sender_email = "no-replynationwideassist@outlook.com"  # your sender email
 
         # Compose message
         message = Mail(
@@ -1877,7 +1877,7 @@ class HireVehicleProvidedService:
             logger.warning("email skipped: no recipients provided")
             return None
 
-        from_email = os.getenv("SENDGRID_SENDER", "noreplynationwideassist@yopmail.com")
+        from_email = os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com")
         reply_to = os.getenv("SENDGRID_REPLY_TO", from_email)
 
         # Prefer Microsoft Graph: it sends from a real Outlook mailbox, so mail

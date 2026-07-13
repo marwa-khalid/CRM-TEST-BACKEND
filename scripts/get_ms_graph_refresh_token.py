@@ -9,7 +9,11 @@ accounts and add this exact redirect URI:
 
 Then run from CRM_BACKEND:
 
-    python scripts/get_ms_graph_refresh_token.py --client-id YOUR_APP_CLIENT_ID --write-env
+    # Case Activity / Outlook email fetching mailbox
+    python scripts/get_ms_graph_refresh_token.py --purpose read --write-env
+
+    # Outgoing no-reply sender mailbox
+    python scripts/get_ms_graph_refresh_token.py --purpose send --write-env
 """
 
 import argparse
@@ -211,6 +215,20 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--scopes", default="", help=f"Default: {DEFAULT_SCOPES}")
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
+    parser.add_argument(
+        "--purpose",
+        choices=["default", "read", "send"],
+        default="default",
+        help=(
+            "Which refresh-token env var to write. read -> MS_GRAPH_READ_REFRESH_TOKEN "
+            "for Case Activity. send -> MS_GRAPH_SEND_REFRESH_TOKEN for outgoing email."
+        ),
+    )
+    parser.add_argument(
+        "--token-env-key",
+        default="",
+        help="Override the refresh-token env var name to write.",
+    )
     parser.add_argument("--write-env", action="store_true", help="Write the refresh token settings to .env.")
     parser.add_argument("--no-open", action="store_true", help="Print the URL without opening a browser.")
     args = parser.parse_args()
@@ -218,10 +236,26 @@ def main() -> int:
     env_file = Path(args.env_file).resolve()
     load_dotenv(env_file)
 
-    client_id = args.client_id or os.getenv("MS_GRAPH_CLIENT_ID", "").strip()
+    purpose_client_env = {
+        "read": "MS_GRAPH_READ_CLIENT_ID",
+        "send": "MS_GRAPH_SEND_CLIENT_ID",
+    }.get(args.purpose, "MS_GRAPH_CLIENT_ID")
+    client_id = (
+        args.client_id
+        or os.getenv(purpose_client_env, "").strip()
+        or os.getenv("MS_GRAPH_CLIENT_ID", "").strip()
+    )
     client_secret = args.client_secret.strip()
-    tenant = args.tenant or os.getenv("MS_GRAPH_TENANT_ID", "consumers").strip()
-    scopes = args.scopes or os.getenv("MS_GRAPH_DELEGATED_SCOPES", DEFAULT_SCOPES).strip()
+    purpose_tenant_env = {
+        "read": "MS_GRAPH_READ_TENANT_ID",
+        "send": "MS_GRAPH_SEND_TENANT_ID",
+    }.get(args.purpose, "MS_GRAPH_TENANT_ID")
+    tenant = args.tenant or os.getenv(purpose_tenant_env, os.getenv("MS_GRAPH_TENANT_ID", "consumers")).strip()
+    purpose_scopes_env = {
+        "read": "MS_GRAPH_READ_DELEGATED_SCOPES",
+        "send": "MS_GRAPH_SEND_DELEGATED_SCOPES",
+    }.get(args.purpose, "MS_GRAPH_DELEGATED_SCOPES")
+    scopes = args.scopes or os.getenv(purpose_scopes_env, os.getenv("MS_GRAPH_DELEGATED_SCOPES", DEFAULT_SCOPES)).strip()
     redirect_uri = f"http://localhost:{args.port}/callback"
 
     if not client_id:
@@ -288,25 +322,46 @@ def main() -> int:
         )
         return 1
 
+    token_env_key = args.token_env_key.strip()
+    if not token_env_key:
+        token_env_key = {
+            "read": "MS_GRAPH_READ_REFRESH_TOKEN",
+            "send": "MS_GRAPH_SEND_REFRESH_TOKEN",
+        }.get(args.purpose, "MS_GRAPH_REFRESH_TOKEN")
+
     values = {
-        "MS_GRAPH_TENANT_ID": tenant,
-        "MS_GRAPH_CLIENT_ID": client_id,
-        "MS_GRAPH_CLIENT_SECRET": client_secret,
-        "MS_GRAPH_REFRESH_TOKEN": refresh_token,
-        "MS_GRAPH_DELEGATED_SCOPES": scopes,
-        "MS_GRAPH_MAILBOX": "",
+        {
+            "read": "MS_GRAPH_READ_TENANT_ID",
+            "send": "MS_GRAPH_SEND_TENANT_ID",
+        }.get(args.purpose, "MS_GRAPH_TENANT_ID"): tenant,
+        {
+            "read": "MS_GRAPH_READ_CLIENT_ID",
+            "send": "MS_GRAPH_SEND_CLIENT_ID",
+        }.get(args.purpose, "MS_GRAPH_CLIENT_ID"): client_id,
+        token_env_key: refresh_token,
+        {
+            "read": "MS_GRAPH_READ_DELEGATED_SCOPES",
+            "send": "MS_GRAPH_SEND_DELEGATED_SCOPES",
+        }.get(args.purpose, "MS_GRAPH_DELEGATED_SCOPES"): scopes,
     }
+    if client_secret:
+        values[{
+            "read": "MS_GRAPH_READ_CLIENT_SECRET",
+            "send": "MS_GRAPH_SEND_CLIENT_SECRET",
+        }.get(args.purpose, "MS_GRAPH_CLIENT_SECRET")] = client_secret
+    if args.purpose == "default":
+        values["MS_GRAPH_MAILBOX"] = ""
 
     if args.write_env:
         _upsert_env_values(env_file, values)
         print(f"\nUpdated {env_file}")
-        print("Stored MS_GRAPH_REFRESH_TOKEN without printing it here.")
+        print(f"Stored {token_env_key} without printing it here.")
     else:
         print("\nAdd these to your .env:")
         for key, value in values.items():
             print(f"{key}={value}")
 
-    print("\nDone. Restart the backend before testing Outlook email fetch.")
+    print("\nDone. Restart the backend before testing Microsoft Graph.")
     return 0
 
 

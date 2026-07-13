@@ -126,7 +126,12 @@ def file_to_text(file_bytes: bytes, filename: str = "") -> str:
         parts: List[str] = []
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            for page in doc:
+            embedded = "\n".join(page.get_text("text") for page in doc).strip()
+            if len(embedded) > 80:
+                doc.close()
+                return embedded
+            max_pages = int(os.getenv("FLEET_OCR_MAX_PDF_PAGES", "3"))
+            for page in list(doc)[:max_pages]:
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 parts.append(_image_bytes_to_text(pix.tobytes("png")))
             doc.close()
@@ -144,7 +149,27 @@ _POSTCODE = re.compile(r"\b([A-Z]{1,2}\d{1,2}[A-Z]?)\s*(\d[A-Z]{2})\b")
 # look-alike letter (DD3 -> DDS). Digit slots allow those letters; we map back.
 _POSTCODE_LENIENT = re.compile(r"\b([A-Z]{1,2})([0-9OILSZBG]{1,2})([A-Z]?)\s+([0-9OILSZBG])([A-Z]{2})\b")
 _LETTER_TO_DIGIT = {"O": "0", "I": "1", "L": "1", "S": "5", "Z": "2", "B": "8", "G": "6"}
+# Any postcode-shaped token (mangled or not) to scrub from an address, since the
+# corrected postcode is stored separately and the raw form may differ (SWIA vs SW1A).
+_PC_ANY = re.compile(r"\b[A-Z]{1,2}[0-9OILSZBG]{1,2}[A-Z]?\s+[0-9OILSZBG][A-Z]{2}\b", re.IGNORECASE)
 _DATE = re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b")
+_ISO_DATE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+_MONTHS = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+_MONTH_DATE_DMY = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\s+(\d{2,4})\b", re.IGNORECASE)
+_MONTH_DATE_MDY = re.compile(r"\b([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{2,4})\b", re.IGNORECASE)
 _LICENCE_NO = re.compile(r"\b([A-Z9]{4,5}\d{6}[A-Z0-9]{2,8})\b")
 # A UK licence line usually starts with its field marker: 1, 2, 3, 4a, 4b, 5, 8, 9…
 # Leading `[\s.·•*\-]*` tolerates OCR noise before the marker (e.g. a stray ". 8.").
@@ -152,6 +177,12 @@ _FIELD_LINE = re.compile(r"^[\s.·•*\-]*(\d[a-dA-D]?)\s*[.)\]:]\s*(.*)$")
 # A field marker sitting at the START of an address value that still needs stripping.
 _LEADING_MARKER = re.compile(r"^[\s.·•*\-]*\d{1,2}[a-dA-D]?[.)\]:]\s+")
 _URL_TOKEN = re.compile(r"\S*(?:www\.|https?:|\.xyz|\.com|\.co\.uk)\S*", re.IGNORECASE)
+_PROOF_NOISE = re.compile(
+    r"\b(?:at\s*a\s*glance|start balance|money in|money out|end balance|"
+    r"personal account balance|balance in pots|total outgoings|total deposits|"
+    r"sort code|account (?:no|number)|swiftbic|bic:|iban)\b.*$",
+    re.IGNORECASE,
+)
 
 
 def _find_postcode(text: str) -> str:
@@ -182,6 +213,27 @@ def _all_dates(text: str) -> List[date]:
             out.append(date(year, int(mo), int(d)))
         except ValueError:
             pass
+    for y, mo, d in _ISO_DATE.findall(text):
+        try:
+            out.append(date(int(y), int(mo), int(d)))
+        except ValueError:
+            pass
+    for d, mo, y in _MONTH_DATE_DMY.findall(text):
+        month = _MONTHS.get(mo.lower())
+        year = int(y) + 2000 if len(y) == 2 else int(y)
+        if month:
+            try:
+                out.append(date(year, month, int(d)))
+            except ValueError:
+                pass
+    for mo, d, y in _MONTH_DATE_MDY.findall(text):
+        month = _MONTHS.get(mo.lower())
+        year = int(y) + 2000 if len(y) == 2 else int(y)
+        if month:
+            try:
+                out.append(date(year, month, int(d)))
+            except ValueError:
+                pass
     return out
 
 
@@ -210,6 +262,27 @@ def _collect_licence_fields(lines: List[str]) -> Dict[str, str]:
         elif current is not None:
             fields[current].append(line.strip())
     return {k: " ".join(v).strip() for k, v in fields.items()}
+
+
+def _clean_address(addr: str) -> str:
+    """Tidy an OCR'd address:
+    - drop symbol garbage like "@ Sees" (a signature / security-feature misread),
+    - re-insert a space between a house number and street ("9Anderson" -> "9 Anderson";
+      3+ letters so ordinals "1st" and flat suffixes "2B" are left alone),
+    - collapse whitespace and stray separators."""
+    if not addr:
+        return addr
+    addr = re.sub(r"@\s*\S+", " ", addr)          # "@ Sees"-type OCR garbage
+    addr = _PC_ANY.sub(" ", addr)                  # residual postcode token (SWIA 2AA)
+    addr = re.sub(r"[^\w\s,.'/-]", " ", addr)       # any other stray symbols
+    addr = re.sub(r"(\d)([A-Za-z]{3,})", r"\1 \2", addr)
+    return re.sub(r"\s{2,}", " ", addr).strip(" ,.")
+
+
+def _clean_proof_segment(seg: str) -> str:
+    seg = _PROOF_NOISE.sub("", seg)
+    seg = re.sub(r"[•|]+", " ", seg)
+    return re.sub(r"\s{2,}", " ", seg).strip(" ,.")
 
 
 def parse_driving_licence(text: str) -> Dict[str, str]:
@@ -299,11 +372,12 @@ def parse_driving_licence(text: str) -> Dict[str, str]:
                     addr = re.sub(re.escape(result["postcode"]), "", " ".join(parts), flags=re.IGNORECASE)
                     result["address"] = re.sub(r"\s{2,}", " ", addr).strip(" ,").title()
                     break
+    result["address"] = _clean_address(result["address"])
     return result
 
 
 def parse_proof_of_address(text: str) -> Dict[str, str]:
-    """Extract the address block + postcode from a proof-of-address (utility bill)."""
+    """Extract address + postcode from a proof-of-address (bank statement/utility bill)."""
     result = {"address": "", "postcode": ""}
     if not text or not text.strip():
         return result
@@ -322,10 +396,11 @@ def parse_proof_of_address(text: str) -> Dict[str, str]:
     if pc_index >= 0:
         block: List[str] = []
         for j in range(pc_index, max(-1, pc_index - 4), -1):
-            seg = lines[j]
+            seg = _clean_proof_segment(lines[j])
             if _DATE.search(seg):  # skip a bill/issue date sitting in the block
                 continue
-            block.insert(0, seg)
+            if seg:
+                block.insert(0, seg)
         # The address starts at the first house-number line — drop any name line
         # above it so it lines up with the licence address for comparison.
         start = 0
@@ -335,4 +410,48 @@ def parse_proof_of_address(text: str) -> Dict[str, str]:
                 break
         addr = re.sub(re.escape(postcode), "", " ".join(block[start:]), flags=re.IGNORECASE)
         result["address"] = re.sub(r"\s{2,}", " ", addr).strip(" ,").title()
+    result["address"] = _clean_address(result["address"])
+    return result
+
+
+def parse_insurance_certificate(text: str) -> Dict[str, str]:
+    """Extract policy start/end dates from an insurance certificate.
+
+    Most certificates label the dates as start/inception/effective/from and
+    expiry/end/to. Fall back to the first/last plausible dates in the document.
+    """
+    result = {"policyStartDate": "", "policyEndDate": ""}
+    if not text or not text.strip():
+        return result
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    def labelled(pattern: str, prefer_last: bool = False):
+        rx = re.compile(pattern, re.IGNORECASE)
+        for i, line in enumerate(lines):
+            if not rx.search(line):
+                continue
+            dates = _all_dates(line)
+            if dates:
+                return dates[-1] if prefer_last else dates[0]
+            if i + 1 < len(lines):
+                dates = _all_dates(lines[i + 1])
+                if dates:
+                    return dates[-1] if prefer_last else dates[0]
+        return None
+
+    start = labelled(r"\b(?:policy\s*)?(?:start|commencement|inception|effective|from)\b")
+    end = labelled(r"\b(?:policy\s*)?(?:end|expiry|expires|expiration|to)\b", prefer_last=True)
+
+    all_dates = sorted(set(_all_dates(text)))
+    if start is None and all_dates:
+        start = all_dates[0]
+    if end is None and all_dates:
+        future_or_same = [d for d in all_dates if start is None or d >= start]
+        end = future_or_same[-1] if future_or_same else all_dates[-1]
+
+    if start:
+        result["policyStartDate"] = start.isoformat()
+    if end:
+        result["policyEndDate"] = end.isoformat()
     return result

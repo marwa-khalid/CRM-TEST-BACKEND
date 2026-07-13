@@ -22,7 +22,7 @@ from appflow.utils import build_case_reference, build_invoice_reference
 from libdata.models.tables import ABIBHRCharges, Claim
 
 
-FROM_EMAIL = os.getenv("SENDGRID_SENDER", "noreplynationwideassist@yopmail.com")
+FROM_EMAIL = os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com")
 REPLY_TO_EMAIL = os.getenv("SENDGRID_REPLY_TO", FROM_EMAIL)
 
 

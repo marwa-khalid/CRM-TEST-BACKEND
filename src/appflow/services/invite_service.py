@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-FROM_EMAIL = os.getenv("SENDGRID_SENDER", "noreplynationwideassist@yopmail.com")
+FROM_EMAIL = os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5174")
 
 _LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "logo.png")

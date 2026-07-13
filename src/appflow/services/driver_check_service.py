@@ -850,7 +850,7 @@ class DriverCheckService:
             logger.warning("Graph send failed for checkout email; falling back to SendGrid")
 
         message = Mail(
-            from_email="No-Reply <noreplynationwideassist@yopmail.com>",
+            from_email="No-Reply <no-replynationwideassist@outlook.com>",
             to_emails=recipients,
             subject=subject,
             html_content=html,

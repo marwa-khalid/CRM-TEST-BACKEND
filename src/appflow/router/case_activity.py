@@ -38,7 +38,7 @@ def _normalize_document_key(raw_key: str) -> str:
     return unquote(value).lstrip("/")
 
 def get_outlook_token(db: Session) -> str:
-    return MicrosoftGraphTokenService.get_access_token()
+    return MicrosoftGraphTokenService.get_access_token("read")
 
 
 def _current_user_id(request: Request) -> Optional[int]:

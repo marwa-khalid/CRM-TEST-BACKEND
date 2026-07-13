@@ -31,8 +31,8 @@ from appflow.services.microsoft_graph_token_service import MicrosoftGraphTokenSe
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
-def _mailbox_url(path: str = "") -> str:
-    mailbox = MicrosoftGraphTokenService.mailbox_user()
+def _mailbox_url(path: str = "", context: str = "read") -> str:
+    mailbox = MicrosoftGraphTokenService.mailbox_user(context)
     if mailbox:
         base = f"{GRAPH_BASE}/users/{urllib.parse.quote(mailbox, safe='')}"
     else:

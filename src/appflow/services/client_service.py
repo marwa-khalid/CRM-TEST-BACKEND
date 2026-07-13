@@ -437,7 +437,7 @@ def send_vulnerable_notify_manager(claim_id: int, db,current_user:int,tenant_id:
 
     if sendgrid_status is None:
         message = Mail(
-            from_email="proclaim@yopmail.com",
+            from_email="no-replynationwideassist@outlook.com",
             to_emails=receiver_email,
             subject=subject,
             html_content=html_content,

@@ -60,7 +60,7 @@ def send_email(
             return {"status": "skipped", "detail": "email not configured"}
         message = Mail(
             from_email=from_email
-            or os.getenv("SENDGRID_SENDER", "noreplynationwideassist@yopmail.com"),
+            or os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com"),
             to_emails=[To(e) for e in recipients],
             subject=subject,
             html_content=html,
