@@ -140,16 +140,38 @@ def file_to_text(file_bytes: bytes, filename: str = "") -> str:
 # Shared helpers
 # --------------------------------------------------------------------------- #
 _POSTCODE = re.compile(r"\b([A-Z]{1,2}\d{1,2}[A-Z]?)\s*(\d[A-Z]{2})\b")
+# Lenient fallback: a postcode-shaped token where OCR mangled a digit into a
+# look-alike letter (DD3 -> DDS). Digit slots allow those letters; we map back.
+_POSTCODE_LENIENT = re.compile(r"\b([A-Z]{1,2})([0-9OILSZBG]{1,2})([A-Z]?)\s+([0-9OILSZBG])([A-Z]{2})\b")
+_LETTER_TO_DIGIT = {"O": "0", "I": "1", "L": "1", "S": "5", "Z": "2", "B": "8", "G": "6"}
 _DATE = re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b")
 _LICENCE_NO = re.compile(r"\b([A-Z9]{4,5}\d{6}[A-Z0-9]{2,8})\b")
 # A UK licence line usually starts with its field marker: 1, 2, 3, 4a, 4b, 5, 8, 9…
-_FIELD_LINE = re.compile(r"^\s*(\d[a-dA-D]?)\s*[.)\]:]\s*(.*)$")
+# Leading `[\s.·•*\-]*` tolerates OCR noise before the marker (e.g. a stray ". 8.").
+_FIELD_LINE = re.compile(r"^[\s.·•*\-]*(\d[a-dA-D]?)\s*[.)\]:]\s*(.*)$")
+# A field marker sitting at the START of an address value that still needs stripping.
+_LEADING_MARKER = re.compile(r"^[\s.·•*\-]*\d{1,2}[a-dA-D]?[.)\]:]\s+")
 _URL_TOKEN = re.compile(r"\S*(?:www\.|https?:|\.xyz|\.com|\.co\.uk)\S*", re.IGNORECASE)
 
 
 def _find_postcode(text: str) -> str:
-    m = _POSTCODE.search(text.upper())
-    return f"{m.group(1)} {m.group(2)}" if m else ""
+    up = text.upper()
+    m = _POSTCODE.search(up)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    # Recover an OCR-mangled postcode (e.g. DDS 6PH -> DD5 6PH) so it still gets
+    # separated into its own field instead of polluting the address.
+    lm = _POSTCODE_LENIENT.search(up)
+    if lm:
+        area, dist, sub, inw_d, inw_l = lm.groups()
+        # Require at least one REAL digit in the original token so all-letter words
+        # (e.g. "AS SIX") aren't mistaken for a postcode.
+        if any(ch.isdigit() for ch in dist + inw_d):
+            dist_fixed = "".join(_LETTER_TO_DIGIT.get(c, c) for c in dist)
+            inw_fixed = _LETTER_TO_DIGIT.get(inw_d, inw_d)
+            if any(c.isdigit() for c in dist_fixed) and inw_fixed.isdigit():
+                return f"{area}{dist_fixed}{sub} {inw_fixed}{inw_l}"
+    return ""
 
 
 def _all_dates(text: str) -> List[date]:
@@ -259,6 +281,7 @@ def parse_driving_licence(text: str) -> Dict[str, str]:
         cleaned = _URL_TOKEN.sub("", addr_block)  # drop template URLs
         if postcode:
             cleaned = re.sub(re.escape(postcode), "", cleaned, flags=re.IGNORECASE)
+        cleaned = _LEADING_MARKER.sub("", cleaned)  # drop any leaked "8." marker
         result["postcode"] = postcode or _find_postcode(text)
         result["address"] = re.sub(r"\s{2,}", " ", cleaned).strip(" ,.").title()
     else:
@@ -269,7 +292,7 @@ def parse_driving_licence(text: str) -> Dict[str, str]:
                 if compact_pc in line.upper().replace(" ", ""):
                     parts = []
                     for j in range(max(0, i - 2), i + 1):
-                        seg = re.sub(r"^8[.\s]+", "", lines[j])
+                        seg = _LEADING_MARKER.sub("", lines[j])  # strip "8." / ". 8." markers
                         if _DATE.search(seg) or re.search(r"[A-Z9]{4,5}\d{6}", seg.upper()):
                             continue
                         parts.append(seg)
