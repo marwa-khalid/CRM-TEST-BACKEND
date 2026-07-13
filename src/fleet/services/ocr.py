@@ -70,38 +70,46 @@ def _vision_api_key_ocr(image_bytes: bytes) -> str | None:
         return None
 
 
-def _preprocess(image_bytes: bytes) -> "Image.Image":
-    """Grayscale + autocontrast + upscale so Tesseract can read the small, busy
-    numbered fields on a photocard licence / utility bill."""
+# Count of licence field markers (1. 2. 3. 4a. 5. 8. 9.) — a proxy for how cleanly
+# OCR captured the card structure; used to pick the best preprocessing variant.
+_MARKER_LINE = re.compile(r"(?m)^\s*\d[a-dA-D]?\s*[.)\]:]")
+
+
+def _preprocess_variants(image_bytes: bytes) -> List["Image.Image"]:
+    """A grayscale+autocontrast pass and a binarised pass. Dark ink on a busy pink
+    guilloche background (typical UK licence) reads far better once thresholded."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     g = ImageOps.autocontrast(ImageOps.grayscale(img))
     w, h = g.size
     if max(w, h) < 1800:  # upscale small phone-camera shots
         scale = 1800 / max(w, h)
         g = g.resize((int(w * scale), int(h * scale)))
-    return g
+    binarised = g.point(lambda p: 255 if p > 140 else 0)
+    return [g, binarised]
 
 
 def _tesseract_text(image_bytes: bytes) -> str:
     try:
-        g = _preprocess(image_bytes)
+        variants = _preprocess_variants(image_bytes)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         print(f"Fleet image preprocess failed: {exc}")
         try:
-            g = Image.open(io.BytesIO(image_bytes))
+            variants = [Image.open(io.BytesIO(image_bytes))]
         except Exception:  # pylint: disable=broad-exception-caught
             return ""
-    # Try a couple of page-segmentation modes and keep whichever reads the most —
-    # licences (columned fields) and bills (blocks) prefer different modes.
-    best = ""
-    for cfg in ("--psm 6", "--psm 4", ""):
-        try:
-            t = pytesseract.image_to_string(g, config=cfg)
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            print(f"Fleet local OCR failed ({cfg or 'default'}): {exc}")
-            continue
-        if len(t.strip()) > len(best.strip()):
-            best = t
+    # Try each variant across a few page-segmentation modes (columns vs blocks) and
+    # keep whichever run captured the most field markers, then the most text.
+    best, best_score = "", (-1, -1)
+    for img in variants:
+        for cfg in ("--psm 6", "--psm 4", ""):
+            try:
+                t = pytesseract.image_to_string(img, config=cfg)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                print(f"Fleet local OCR failed ({cfg or 'default'}): {exc}")
+                continue
+            score = (len(_MARKER_LINE.findall(t)), len(t.strip()))
+            if score > best_score:
+                best, best_score = t, score
     return best
 
 
