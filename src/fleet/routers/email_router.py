@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 
 from fleet.deps import get_session, get_tenant_id
-from fleet.models.schemas import DepositRefundRequest, PayHirerRequest
+from fleet.models.schemas import DepositRefundRequest, OnHireEmailRequest, PayHirerRequest
 from fleet.models.tables import FleetHireVehicle
 from fleet.services import email_service
 from fleet.services.common import get_hire_or_404
@@ -78,6 +78,55 @@ async def send_hire_email_route(
     if result.get("status") == "failed":
         raise HTTPException(status_code=502, detail=result.get("detail") or "Email failed to send.")
     return result
+
+
+@router.post("/hire/{hire_id}/on-hire-email")
+def on_hire_email_route(
+    hire_id: int,
+    payload: OnHireEmailRequest,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Send the structured (boxed) on-hire confirmation email."""
+    hire = get_hire_or_404(db, hire_id, tenant_id)
+    if "@" not in (payload.to or ""):
+        raise HTTPException(status_code=400, detail="A valid recipient email is required.")
+    data = {
+        "driver_name": hire.driver_name,
+        "registration": payload.registration,
+        "make": payload.make,
+        "model": payload.model,
+        "hire_start": payload.hire_start,
+    }
+    subject = payload.subject or f"Your Vehicle is Now On Hire - {payload.registration or ''}".strip()
+    # Always send the structured (boxed) template — never the free-form `body`, which
+    # renders as a run-on paragraph in Outlook. `body` is ignored for on-hire.
+    result = email_service.send_on_hire_email(payload.to, subject, data, cc=payload.cc)
+    if result.get("status") == "failed":
+        raise HTTPException(status_code=502, detail=result.get("detail") or "Email failed to send.")
+    return result
+
+
+@router.get("/hire/{hire_id}/on-hire-email/preview")
+def on_hire_email_preview_route(
+    hire_id: int,
+    registration: str = Query(""),
+    make: str = Query(""),
+    model: str = Query(""),
+    hire_start: str = Query(""),
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """The exact structured on-hire email HTML, without the embedded logo, for preview."""
+    hire = get_hire_or_404(db, hire_id, tenant_id)
+    data = {
+        "driver_name": hire.driver_name,
+        "registration": registration,
+        "make": make,
+        "model": model,
+        "hire_start": hire_start,
+    }
+    return {"html": email_service.render_on_hire(data, include_logo=False)}
 
 
 def _refund_data(hire, payload: Optional[DepositRefundRequest] = None) -> dict:

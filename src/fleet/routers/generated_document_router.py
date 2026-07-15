@@ -1,6 +1,6 @@
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from fleet.deps import get_session, get_tenant_id
@@ -17,20 +17,28 @@ router = APIRouter()
 def list_generated_document_files_route(
     hire_id: int,
     document_key: str,
+    vehicle_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    return generated_document_service.list_document_files(db, hire_id, tenant_id, document_key)
+    return generated_document_service.list_document_files(db, hire_id, tenant_id, document_key, vehicle_id)
 
 
 @router.get("/hire/{hire_id}/generated-documents/{document_key}/download")
 def download_generated_document_route(
     hire_id: int,
     document_key: str,
+    vehicle_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    data, media, filename = generated_document_service.get_document_bundle(db, hire_id, tenant_id, document_key)
+    data, media, filename = generated_document_service.get_document_bundle(
+        db,
+        hire_id,
+        tenant_id,
+        document_key,
+        vehicle_id,
+    )
     return Response(
         content=data,
         media_type=media,
@@ -43,6 +51,7 @@ def get_generated_document_file_route(
     hire_id: int,
     document_key: str,
     file_key: str,
+    vehicle_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
@@ -52,6 +61,7 @@ def get_generated_document_file_route(
         tenant_id,
         document_key,
         file_key,
+        vehicle_id,
     )
     return Response(
         content=data,

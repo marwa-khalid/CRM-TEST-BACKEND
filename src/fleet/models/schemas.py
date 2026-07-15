@@ -1,6 +1,6 @@
 """Pydantic schemas for the Fleet module."""
 from datetime import date, datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -55,6 +55,7 @@ class HireUpdate(BaseModel):
     swap_reason: Optional[str] = None
     swap_reason_text: Optional[str] = None
     hire_start_date: Optional[date] = None
+    hire_start_time: Optional[str] = None
     hire_end_date: Optional[date] = None
     total_hire_period: Optional[str] = None
     hire_insurance_type: Optional[str] = None
@@ -68,7 +69,7 @@ class HireUpdate(BaseModel):
     payment_hire_end_date: Optional[date] = None
     vehicle_cost_per_day: Optional[str] = None
     number_of_weekly_payments: Optional[str] = None
-    payment_day: Optional[date] = None
+    payment_day: Optional[str] = None
     security_deposit: Optional[str] = None
     weekly_hire_payment: Optional[str] = None
     total_planned_hire_cost: Optional[str] = None
@@ -157,6 +158,7 @@ class HireResponse(BaseModel):
     swap_reason: Optional[str] = None
     swap_reason_text: Optional[str] = None
     hire_start_date: Optional[date] = None
+    hire_start_time: Optional[str] = None
     hire_end_date: Optional[date] = None
     total_hire_period: Optional[str] = None
     hire_insurance_type: Optional[str] = None
@@ -170,16 +172,31 @@ class HireResponse(BaseModel):
     payment_hire_end_date: Optional[date] = None
     vehicle_cost_per_day: Optional[str] = None
     number_of_weekly_payments: Optional[str] = None
-    payment_day: Optional[date] = None
+    payment_day: Optional[str] = None
     security_deposit: Optional[str] = None
     weekly_hire_payment: Optional[str] = None
     total_planned_hire_cost: Optional[str] = None
     initial_amount_due: Optional[str] = None
     payment_damage_charges: Optional[str] = None
     additional_charges: Optional[str] = None
+    # Derived (list view): the most recently added vehicle on the Hire Vehicle Details
+    # screen — drives the On/Off Hire listing widgets and the listing's Vehicle Reg column.
+    last_vehicle_hire_status: Optional[str] = None
+    last_vehicle_registration: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class HireCompletionSummary(BaseModel):
+    vehicle_present: int = 0
+    vehicle_total: int = 5
+    proof_present: int = 0
+    proof_total: int = 3
+    document_present: int = 0
+    document_total: int = 8
+    pcn_present: int = 0
+    pcn_total: int = 8
 
 
 class VehicleUpdate(BaseModel):
@@ -212,6 +229,8 @@ class VehicleUpdate(BaseModel):
     checkout_cleanliness: Optional[str] = None
     damage_charges: Optional[str] = None
     damage_notes: Optional[str] = None
+    additional_charges: Optional[str] = None
+    additional_charges_reason: Optional[str] = None
 
 
 class VehicleResponse(VehicleUpdate):
@@ -221,6 +240,25 @@ class VehicleResponse(VehicleUpdate):
 
     class Config:
         from_attributes = True
+
+
+class FleetVehicleRegisterResponse(BaseModel):
+    id: int
+    registration_number: str
+    make: str
+    model: str
+    transmission: Optional[str] = None
+    is_active: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class FleetVehicleRegisterUpsert(BaseModel):
+    registration_number: str
+    make: Optional[str] = None
+    model: Optional[str] = None
+    transmission: Optional[str] = None
 
 
 class PcnUpdate(BaseModel):
@@ -286,23 +324,78 @@ class PcnReminderResponse(PcnReminderUpdate):
 class ScheduleSync(BaseModel):
     count: int
     due_amount: Optional[str] = None
+    initial_due_amount: Optional[str] = None
 
 
 class PaymentUpdate(BaseModel):
+    vehicle_id: Optional[int] = None
     week: Optional[int] = None
     due_amount: Optional[str] = None
     status: Optional[str] = None
     paid_amount: Optional[str] = None
     payment_date: Optional[date] = None
+    payment_time: Optional[str] = None
     notes: Optional[str] = None
+
+
+class PaymentTransactionCreate(BaseModel):
+    """A single dated payment recorded against a weekly schedule row."""
+    amount: str
+    payment_mode: Optional[str] = "cash"
+    payment_date: Optional[date] = None
+    payment_time: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PaymentTransactionUpdate(BaseModel):
+    """Edit an existing payment — every field optional; only sent fields apply."""
+    amount: Optional[str] = None
+    payment_mode: Optional[str] = None
+    payment_date: Optional[date] = None
+    payment_time: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PaymentTransactionResponse(BaseModel):
+    id: int
+    payment_id: int
+    amount: Optional[str] = None
+    payment_mode: Optional[str] = None
+    payment_date: Optional[date] = None
+    payment_time: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
 class PaymentResponse(PaymentUpdate):
     id: int
     hire_id: int
+    transactions: List[PaymentTransactionResponse] = []
 
     class Config:
         from_attributes = True
+
+
+class FleetSmsRequest(BaseModel):
+    mobile: Optional[str] = None
+    message: str
+    correspondent: Optional[str] = None
+    reference: Optional[str] = None
+    sms_phrase: Optional[str] = None
+    history_details: Optional[str] = None
+    kind: Optional[str] = None
+
+
+class FleetSmsResponse(BaseModel):
+    status: str
+    provider: Optional[str] = None
+    to: Optional[str] = None
+    sid: Optional[str] = None
+    message_id: Optional[str] = None
+    detail: Optional[str] = None
 
 
 class DepositRefundRequest(BaseModel):
@@ -326,3 +419,16 @@ class PayHirerRequest(BaseModel):
     amount: str
     reason: str
     registration: Optional[str] = None
+
+
+class OnHireEmailRequest(BaseModel):
+    """Inputs for the structured On-Hire confirmation email. The hirer name comes
+    from the hire record; the vehicle fields come from the selected vehicle."""
+    to: str
+    cc: Optional[str] = None
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    registration: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    hire_start: Optional[str] = None

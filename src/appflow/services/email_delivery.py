@@ -15,6 +15,18 @@ def _split_recipients(to: Union[str, List[str], None]) -> List[str]:
     return [e for e in parts if e and "@" in e]
 
 
+def _is_microsoft_mailbox(value: Optional[str]) -> bool:
+    email = (value or "").strip().lower()
+    if "@" not in email:
+        return False
+    domain = email.rsplit("@", 1)[-1]
+    return domain in {"outlook.com", "hotmail.com", "live.com", "msn.com"}
+
+
+def _env_bool(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def send_email(
     to: Union[str, List[str]],
     subject: str,
@@ -40,14 +52,34 @@ def send_email(
         logger.warning("send_email skipped: no valid recipients")
         return {"status": "skipped", "detail": "no valid recipients"}
 
+    sender = (
+        from_email
+        or os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com")
+    )
+
     # Prefer Graph.
-    if GraphEmailService.is_configured():
+    graph_configured = GraphEmailService.is_configured()
+    if graph_configured:
         result = GraphEmailService.send_mail(
             recipients, subject, html, cc=cc, reply_to=reply_to, attachments=attachments
         )
         if result is not None:
             return {"status": "sent", "via": "graph"}
-        logger.warning("Graph send failed; falling back to SendGrid")
+        graph_detail = GraphEmailService.last_error() or "unknown Graph error"
+        if _env_bool("EMAIL_DELIVERY_REQUIRE_GRAPH") or _is_microsoft_mailbox(sender):
+            logger.warning(
+                "Graph send failed; SendGrid fallback skipped because sender "
+                f"{sender} must be sent through Microsoft Graph: {graph_detail}"
+            )
+            return {
+                "status": "failed",
+                "detail": (
+                    "Microsoft Graph send failed: "
+                    f"{graph_detail}. SendGrid fallback skipped because {sender} "
+                    "is an Outlook/Microsoft mailbox sender."
+                ),
+            }
+        logger.warning(f"Graph send failed; falling back to SendGrid: {graph_detail}")
 
     # SendGrid fallback.
     try:
@@ -59,8 +91,7 @@ def send_email(
         if not api_key:
             return {"status": "skipped", "detail": "email not configured"}
         message = Mail(
-            from_email=from_email
-            or os.getenv("SENDGRID_SENDER", "no-replynationwideassist@outlook.com"),
+            from_email=sender,
             to_emails=[To(e) for e in recipients],
             subject=subject,
             html_content=html,

@@ -3,7 +3,8 @@ Fleet domain stays independent of Claims and can be extracted later. Shares the
 same declarative Base/metadata as the rest of libdata so one Alembic migration
 and cross-table FKs work.
 """
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Date, Text
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, DateTime, Date, Text
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from fleet.deps import Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin
@@ -85,7 +86,7 @@ class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     payment_hire_end_date = Column(Date, nullable=True)
     vehicle_cost_per_day = Column(String(50), nullable=True)
     number_of_weekly_payments = Column(String(20), nullable=True)
-    payment_day = Column(Date, nullable=True)
+    payment_day = Column(String(50), nullable=True)
     security_deposit = Column(String(50), nullable=True)
     weekly_hire_payment = Column(String(50), nullable=True)
     total_planned_hire_cost = Column(String(50), nullable=True)
@@ -95,16 +96,44 @@ class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
 
 
 class FleetHirePayment(Base, AuditStampMixin):
-    """One row of a hire's weekly payment schedule (Record Payment)."""
+    """One row of a hire's weekly payment schedule (Record Payment).
+
+    `paid_amount` is the running total for the week — the sum of its individual
+    transactions (split / part payments). `payment_date`/`payment_time` mirror the
+    most recent transaction so the schedule table can show a single summary line."""
     __tablename__ = "fleet_hire_payment"
 
     id = Column(Integer, primary_key=True, index=True)
     hire_id = Column(Integer, ForeignKey("fleet_hire.id", ondelete="CASCADE"), index=True, nullable=False)
+    vehicle_id = Column(Integer, ForeignKey("fleet_hire_vehicle.id", ondelete="CASCADE"), index=True, nullable=True)
     week = Column(Integer, nullable=True)
     due_amount = Column(String(50), nullable=True)
-    status = Column(String(20), nullable=True)  # paid | partial | pending
+    status = Column(String(20), nullable=True)  # received | partial | pending
     paid_amount = Column(String(50), nullable=True)
     payment_date = Column(Date, nullable=True)
+    payment_time = Column(String(20), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    transactions = relationship(
+        "FleetHirePaymentTransaction",
+        cascade="all, delete-orphan",
+        order_by="FleetHirePaymentTransaction.id",
+        lazy="selectin",
+    )
+
+
+class FleetHirePaymentTransaction(Base, AuditStampMixin):
+    """A single payment made against a weekly schedule row. Multiple transactions
+    per week let a hirer split a week's due into several dated part-payments, each
+    with its own amount / date / note kept in full history."""
+    __tablename__ = "fleet_hire_payment_transaction"
+
+    id = Column(Integer, primary_key=True, index=True)
+    payment_id = Column(Integer, ForeignKey("fleet_hire_payment.id", ondelete="CASCADE"), index=True, nullable=False)
+    amount = Column(String(50), nullable=True)
+    payment_mode = Column(String(50), nullable=True)  # cash | security_deposit
+    payment_date = Column(Date, nullable=True)
+    payment_time = Column(String(20), nullable=True)
     notes = Column(Text, nullable=True)
 
 
@@ -158,6 +187,7 @@ class FleetHireVehicle(Base, AuditStampMixin):
     swap_reason = Column(String(100), nullable=True)
     swap_reason_text = Column(Text, nullable=True)
     hire_start_date = Column(Date, nullable=True)
+    hire_start_time = Column(String(20), nullable=True)
     hire_end_date = Column(Date, nullable=True)
     total_hire_period = Column(String(100), nullable=True)
     hire_insurance_type = Column(String(100), nullable=True)
@@ -176,8 +206,23 @@ class FleetHireVehicle(Base, AuditStampMixin):
     checkout_cleanliness = Column(String(50), nullable=True)
     damage_charges = Column(String(50), nullable=True)
     damage_notes = Column(Text, nullable=True)
+    additional_charges = Column(String(100), nullable=True)
+    additional_charges_reason = Column(Text, nullable=True)
 
     created_by = Column(Integer, nullable=True)
+
+
+class FleetVehicleRegister(Base, AuditStampMixin):
+    """Reusable Fleet vehicle register. `is_active=True` means the vehicle is
+    currently on hire and cannot be selected for a different hire file."""
+    __tablename__ = "fleet_vehicle_register"
+
+    id = Column(Integer, primary_key=True, index=True)
+    registration_number = Column(String(50), unique=True, index=True, nullable=False)
+    make = Column(String(100), nullable=False)
+    model = Column(String(100), nullable=False)
+    transmission = Column(String(50), nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default="false")
 
 
 class FleetPcn(Base, AuditStampMixin, AuditByMixin):

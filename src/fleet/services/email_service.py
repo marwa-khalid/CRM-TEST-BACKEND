@@ -144,6 +144,65 @@ def send_deposit_refund_email(to: str, subject: str, data: dict, cc: Optional[st
 
 
 # --------------------------------------------------------------------------- #
+# Structured On-Hire template (boxed vehicle details — same visual language)
+# --------------------------------------------------------------------------- #
+def _centered_text(html_inner: str) -> str:
+    return (
+        '<div style="max-width:460px;margin:0 auto 20px auto;font-size:13px;line-height:1.6;color:#334155;">'
+        f"{html_inner}</div>"
+    )
+
+
+def render_on_hire(data: dict, include_logo: bool = True) -> str:
+    """Structured on-hire confirmation. Uses real HTML boxes/rows so the vehicle
+    details render as a labelled table in every client — Outlook strips the
+    ``white-space:pre-wrap`` the free-form template relied on, which is what made
+    the old version collapse into one run-on paragraph."""
+    g = lambda k: (data.get(k) or "")  # noqa: E731
+
+    greeting = _centered_text(f'<p style="margin:0;">Dear {escape(g("driver_name") or "Hirer")},</p>')
+    intro = _centered_text('<p style="margin:0;">Your vehicle is now on hire. Please see the vehicle details below.</p>')
+
+    vehicle = _box(
+        _heading("Vehicle Details")
+        + _divider().join([
+            _row("Registration", g("registration")),
+            _row("Make", g("make")),
+            _row("Model", g("model")),
+            _row("Hire Start", g("hire_start")),
+        ])
+    )
+
+    helpful = _box(
+        _heading("Helpful Information")
+        + '<div style="font-size:12px;line-height:1.7;color:#334155;">'
+        '<p style="margin:0 0 6px 0;">Please keep this email for your records during the hire period.</p>'
+        '<p style="margin:0 0 6px 0;">If you need assistance during the hire, please contact Skyline Car Hire (UK) Ltd.</p>'
+        '<p style="margin:0;">Please note that in the event of a road traffic accident you must call <strong>0800 410 1999</strong>.</p>'
+        "</div>"
+    )
+
+    logo = ('<div style="text-align:center;">' + _LOGO_IMG + "</div>") if include_logo else ""
+    return (
+        '<div style="font-family:Arial,sans-serif;background:#ffffff;padding:20px;color:#334155;">'
+        + logo
+        + greeting
+        + intro
+        + vehicle
+        + helpful
+        + '<div style="text-align:center;font-size:12px;border-top:1px solid #eee;padding-top:20px;margin-top:10px;">'
+        '<p style="font-weight:600;">Kind regards,<br>Skyline Car Hire (UK) Ltd</p></div>'
+        "</div>"
+    )
+
+
+def send_on_hire_email(to: str, subject: str, data: dict, cc: Optional[str] = None) -> dict:
+    html = render_on_hire(data)
+    # Logo auto-embeds inline via GraphEmailService (cid:companylogo) — not attached.
+    return send_email(to=to, subject=subject or "Your Vehicle is Now On Hire", html=html, cc=cc)
+
+
+# --------------------------------------------------------------------------- #
 # Structured Pay/Reimburse Hirer template (same boxed visual language)
 # --------------------------------------------------------------------------- #
 def render_pay_hirer(data: dict, include_logo: bool = True) -> str:

@@ -177,7 +177,7 @@ class HireVehicleProvidedService:
         """
 
         if "on hire" in status_label:
-            subject = f"Your Hire Vehicle is Now On Hire - {record.hire_vehicle_registration}"
+            subject = f"Your Vehicle is Now On Hire - {record.hire_vehicle_registration}"
             html_content += f"<p><strong>Hire Start Date:</strong> {hire_start}</p>"
         elif "off hire" in status_label:
             subject = f"Your Hire Vehicle is Off Hire - {record.hire_vehicle_registration}"

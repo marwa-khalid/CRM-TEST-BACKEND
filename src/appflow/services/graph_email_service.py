@@ -53,6 +53,15 @@ class GraphEmailService:
     """
 
     GRAPH_SEND_URL = "https://graph.microsoft.com/v1.0/me/sendMail"
+    _last_error = ""
+
+    @classmethod
+    def last_error(cls) -> str:
+        return cls._last_error
+
+    @classmethod
+    def _set_error(cls, detail: str) -> None:
+        cls._last_error = detail
 
     @staticmethod
     def is_configured() -> bool:
@@ -89,13 +98,18 @@ class GraphEmailService:
         """
         to_recipients = _to_recipients(to)
         cc_recipients = _to_recipients(cc)
+        cls._set_error("")
         if not to_recipients and not cc_recipients:
-            logger.warning("Graph send skipped: no valid recipients")
+            detail = "no valid recipients"
+            cls._set_error(detail)
+            logger.warning(f"Graph send skipped: {detail}")
             return None
 
         token = MicrosoftGraphTokenService.get_access_token("send")
         if not token:
-            logger.warning("Graph send skipped: no access token available")
+            detail = "no access token available"
+            cls._set_error(detail)
+            logger.warning(f"Graph send skipped: {detail}")
             return None
 
         message: dict = {
@@ -160,10 +174,12 @@ class GraphEmailService:
                 addrs = [r["emailAddress"]["address"] for r in to_recipients]
                 logger.info(f"Graph email sent to {addrs}")
                 return _GraphSendResult(resp.status_code)
+            cls._set_error(f"status={resp.status_code} body={resp.text[:300]}")
             logger.warning(
                 f"Graph send failed: status={resp.status_code} body={resp.text[:300]}"
             )
             return None
         except Exception as e:
+            cls._set_error(str(e))
             logger.warning(f"Graph send error: {e}")
             return None

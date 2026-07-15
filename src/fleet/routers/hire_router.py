@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from fleet.deps import actor_id, get_session, get_tenant_id
-from fleet.models.schemas import HireAuditResponse, HireResponse, HireUpdate
+from fleet.models.schemas import HireAuditResponse, HireCompletionSummary, HireResponse, HireUpdate
 from fleet.services import hire_service
 
 router = APIRouter()
@@ -34,6 +34,15 @@ def get_hire_route(
     tenant_id: int = Depends(get_tenant_id),
 ):
     return hire_service.get_hire(db, hire_id, tenant_id)
+
+
+@router.get("/hire/{hire_id}/completion-summary", response_model=HireCompletionSummary)
+def get_completion_summary_route(
+    hire_id: int,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    return hire_service.completion_summary(db, hire_id, tenant_id)
 
 
 @router.patch("/hire/{hire_id}", response_model=HireResponse)

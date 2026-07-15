@@ -12,6 +12,7 @@ from fleet.routers.hire_router import router as hire_router
 from fleet.routers.ocr_router import router as ocr_router
 from fleet.routers.payment_router import router as payment_router
 from fleet.routers.pcn_router import router as pcn_router
+from fleet.routers.sms_router import router as sms_router
 from fleet.routers.vehicle_router import router as vehicle_router
 
 # authenticate populates request.state (tenant_id/user_id) that child route deps read.
@@ -25,3 +26,4 @@ fleet_router.include_router(generated_document_router)
 fleet_router.include_router(payment_router)
 fleet_router.include_router(email_router)
 fleet_router.include_router(pcn_router)
+fleet_router.include_router(sms_router)
