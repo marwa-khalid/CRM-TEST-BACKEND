@@ -213,8 +213,10 @@ class VehicleUpdate(BaseModel):
     swap_reason: Optional[str] = None
     swap_reason_text: Optional[str] = None
     hire_start_date: Optional[date] = None
+    hire_start_time: Optional[str] = None
     hire_end_date: Optional[date] = None
     total_hire_period: Optional[str] = None
+    number_of_weekly_payments: Optional[str] = None
     hire_insurance_type: Optional[str] = None
     insurance_date_received: Optional[date] = None
     policy_start_date: Optional[date] = None
@@ -404,11 +406,25 @@ class DepositRefundRequest(BaseModel):
     to: str
     cc: Optional[str] = None
     subject: Optional[str] = "Request Refund Deposit"
+    ref: Optional[str] = None
+    hirer_name: Optional[str] = None
     registration: Optional[str] = None
+    deposit: Optional[str] = None
     valeting_fee: Optional[str] = "0"
     vehicle_damages: Optional[str] = None  # defaults to the hire's damage charges
+    additional_charges: Optional[str] = None
     excess_ppm: Optional[str] = "0"
     hire_charges_unpaid: Optional[str] = "0"
+    adjusted_from_deposit: Optional[str] = None
+    charges_due: Optional[str] = None
+    total_deductions: Optional[str] = None
+    refund_amount: Optional[str] = None
+    bank: Optional[str] = None
+    account_name: Optional[str] = None
+    sort_code: Optional[str] = None
+    account_number: Optional[str] = None
+    hire_start: Optional[str] = None
+    hire_end: Optional[str] = None
 
 
 class PayHirerRequest(BaseModel):

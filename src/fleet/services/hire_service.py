@@ -20,11 +20,11 @@ def _surname_from(name: Optional[str]) -> str:
 
 
 def _reference_for(hire: FleetHire) -> str:
-    # `FLT-YYYYMM-{id}` on creation (Screen 1); once the driver's surname is
-    # known (Screen 2) the FLT prefix is replaced by the surname.
-    reference_date = hire.file_opened_at or hire.created_at or datetime.now(timezone.utc)
-    prefix = _surname_from(hire.driver_name).upper() or "FLT"
-    return f"{prefix}-{reference_date:%Y%m}-{hire.id:03d}"
+    # `SK-{SURNAME}-{id}` (Skyline). The date part is dropped so Fleet references
+    # never collide with the Claims format. Until the driver's surname is known
+    # (Screen 2) it's just `SK-{id}`; it fills in live once the surname is saved.
+    surname = _surname_from(hire.driver_name).upper()
+    return f"SK-{surname}-{hire.id}" if surname else f"SK-{hire.id}"
 
 
 def _ensure_reference(hire: FleetHire) -> bool:

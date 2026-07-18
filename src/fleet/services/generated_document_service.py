@@ -6,18 +6,22 @@ from ``fleet/assets/Documents``; this service exposes them through authenticated
 Fleet routes for download/email attachment.
 """
 from dataclasses import dataclass
+from html import escape
 from io import BytesIO
 import mimetypes
 from pathlib import Path
 import re
+import sys
 from typing import Dict, List, Optional, Tuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from fleet.models.tables import FleetHireVehicle
+from fleet.deps import S3Service
+from fleet.models.tables import FleetHireDocument, FleetHireVehicle
 from fleet.services.common import get_hire_or_404
+from fleet.services import ocr as fleet_ocr
 
 
 ASSET_DIR = Path(__file__).resolve().parents[1] / "assets" / "Documents"
@@ -86,7 +90,7 @@ def list_document_files(
     vehicle_id: Optional[int] = None,
 ) -> List[dict]:
     hire, vehicle = _get_hire_and_vehicle(db, hire_id, tenant_id, vehicle_id)
-    context = _document_context(hire, vehicle)
+    context = _document_context(hire, vehicle, db)
     return [
         {
             "key": asset.key,
@@ -110,7 +114,7 @@ def get_document_file(
     asset = next((item for item in _assets_for(document_key) if item.key == file_key), None)
     if not asset:
         raise HTTPException(status_code=404, detail="Generated document file not found")
-    return _render_asset(asset, _document_context(hire, vehicle)), asset.content_type, asset.filename
+    return _render_asset(asset, _document_context(hire, vehicle, db)), asset.content_type, asset.filename
 
 
 def get_document_bundle(
@@ -121,7 +125,7 @@ def get_document_bundle(
     vehicle_id: Optional[int] = None,
 ) -> Tuple[bytes, str, str]:
     hire, vehicle = _get_hire_and_vehicle(db, hire_id, tenant_id, vehicle_id)
-    context = _document_context(hire, vehicle)
+    context = _document_context(hire, vehicle, db)
     assets = _assets_for(document_key)
     if len(assets) == 1:
         asset = assets[0]
@@ -132,6 +136,60 @@ def get_document_bundle(
         for asset in assets:
             zf.writestr(asset.filename, _render_asset(asset, context))
     return output.getvalue(), "application/zip", f"{document_key.replace('_', ' ').title()}.zip"
+
+
+def get_document_print_view(
+    db: Session,
+    hire_id: int,
+    tenant_id: Optional[int],
+    document_key: str,
+    vehicle_id: Optional[int] = None,
+) -> str:
+    hire, vehicle = _get_hire_and_vehicle(db, hire_id, tenant_id, vehicle_id)
+    context = _document_context(hire, vehicle, db)
+    sections = []
+    for asset in _assets_for(document_key):
+        data = _render_asset(asset, context)
+        if asset.filename.lower().endswith(".docx"):
+            body = _docx_to_html(data)
+        elif asset.filename.lower().endswith(".xls"):
+            body = _xls_to_html(data)
+        elif asset.filename.lower().endswith(".xlsx"):
+            body = _xlsx_to_html(data)
+        else:
+            body = f"<p>This document is ready: {escape(asset.filename)}</p>"
+        sections.append(f"<section><h2>{escape(asset.filename)}</h2>{body}</section>")
+
+    return f"""<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Printable Documents</title>
+    <style>
+      *{{box-sizing:border-box}}
+      body{{font-family:Arial,sans-serif;margin:24px;color:#111827;background:#fff}}
+      header{{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e5e7eb;padding-bottom:14px;margin-bottom:20px}}
+      h1{{font-size:22px;margin:0}}
+      h2{{font-size:16px;margin:0 0 14px}}
+      button{{font:inherit;border:1px solid #111827;border-radius:4px;background:#111827;color:#fff;padding:10px 14px;cursor:pointer}}
+      section{{break-after:page;margin-bottom:28px}}
+      p{{margin:0 0 8px;line-height:1.45;white-space:pre-wrap}}
+      table{{border-collapse:collapse;width:100%;margin:8px 0 14px;table-layout:auto}}
+      td,th{{border:1px solid #d1d5db;padding:6px 8px;vertical-align:top;font-size:12px;white-space:pre-wrap}}
+      th{{background:#f3f4f6;text-align:left}}
+      .empty{{color:#9ca3af}}
+      @media print{{
+        body{{margin:0}}
+        header{{display:none}}
+        section{{margin:0 0 18px}}
+      }}
+    </style>
+  </head>
+  <body>
+    <header><h1>Printable Documents</h1><button onclick="window.print()">Print</button></header>
+    {''.join(sections)}
+  </body>
+</html>"""
 
 
 def _get_hire_and_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_id: Optional[int]):
@@ -145,6 +203,95 @@ def _get_hire_and_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], v
     return hire, vehicle
 
 
+def _docx_to_html(data: bytes) -> str:
+    from docx import Document
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    document = Document(BytesIO(data))
+
+    def paragraph_html(paragraph: Paragraph) -> str:
+        text = paragraph.text.strip()
+        if not text:
+            return ""
+        style = (paragraph.style.name if paragraph.style else "").lower()
+        tag = "h3" if "heading" in style or text.isupper() and len(text) < 80 else "p"
+        return f"<{tag}>{escape(text)}</{tag}>"
+
+    def table_html(table: Table) -> str:
+        rows = []
+        for row in table.rows:
+            cells = "".join(f"<td>{escape(cell.text.strip()) or '&nbsp;'}</td>" for cell in row.cells)
+            rows.append(f"<tr>{cells}</tr>")
+        return f"<table>{''.join(rows)}</table>"
+
+    parts = []
+    for child in document.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            html = paragraph_html(Paragraph(child, document))
+            if html:
+                parts.append(html)
+        elif isinstance(child, CT_Tbl):
+            parts.append(table_html(Table(child, document)))
+    return "".join(parts) or "<p class=\"empty\">No printable content found.</p>"
+
+
+def _xlsx_to_html(data: bytes) -> str:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(BytesIO(data), data_only=True)
+    sheet = workbook.active
+    used_rows = []
+    for row in sheet.iter_rows():
+        values = [cell.value for cell in row]
+        if any(value not in (None, "") for value in values):
+            used_rows.append(values)
+    if not used_rows:
+        return "<p class=\"empty\">No printable content found.</p>"
+
+    last_col = max(
+        (idx + 1 for values in used_rows for idx, value in enumerate(values) if value not in (None, "")),
+        default=0,
+    )
+    rows = []
+    for values in used_rows:
+        cells = "".join(
+            f"<td>{escape(str(value)) if value not in (None, '') else '&nbsp;'}</td>"
+            for value in values[:last_col]
+        )
+        rows.append(f"<tr>{cells}</tr>")
+    return f"<table>{''.join(rows)}</table>"
+
+
+def _xls_to_html(data: bytes) -> str:
+    import xlrd
+
+    workbook = xlrd.open_workbook(file_contents=data)
+    sheet = workbook.sheet_by_index(0)
+    rows = []
+    for row_index in range(sheet.nrows):
+        values = [sheet.cell_value(row_index, col_index) for col_index in range(sheet.ncols)]
+        if any(value not in (None, "") for value in values):
+            rows.append(values)
+    if not rows:
+        return "<p class=\"empty\">No printable content found.</p>"
+
+    last_col = max(
+        (idx + 1 for values in rows for idx, value in enumerate(values) if value not in (None, "")),
+        default=0,
+    )
+    html_rows = []
+    for values in rows:
+        cells = "".join(
+            f"<td>{escape(str(value)) if value not in (None, '') else '&nbsp;'}</td>"
+            for value in values[:last_col]
+        )
+        html_rows.append(f"<tr>{cells}</tr>")
+    return f"<table>{''.join(html_rows)}</table>"
+
+
 def _format_date(value) -> str:
     if not value:
         return ""
@@ -152,6 +299,14 @@ def _format_date(value) -> str:
         return value.strftime("%d/%m/%Y")
     except AttributeError:
         return str(value)
+
+
+def _display_date_from_dmy(value: str) -> str:
+    match = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$", str(value or "").strip())
+    if not match:
+        return str(value or "").strip()
+    day, month, year = match.groups()
+    return f"{day.zfill(2)}/{month.zfill(2)}/{year if len(year) == 4 else '20' + year}"
 
 
 def _date_time(value, time_value) -> str:
@@ -187,7 +342,31 @@ def _address_line(hire) -> str:
     return ", ".join(part.strip() for part in [hire.driver_address, hire.driver_postcode] if part and str(part).strip())
 
 
-def _document_context(hire, vehicle: Optional[FleetHireVehicle]) -> dict:
+def _licence_expiry_from_saved_doc(db: Optional[Session], hire_id: int) -> str:
+    if db is None:
+        return ""
+    doc = (
+        db.query(FleetHireDocument)
+        .filter(
+            FleetHireDocument.hire_id == hire_id,
+            FleetHireDocument.doc_type == "dlFront",
+        )
+        .order_by(FleetHireDocument.id.desc())
+        .first()
+    )
+    if not doc or not doc.s3_key:
+        return ""
+    try:
+        data = S3Service().read_file_bytes(doc.s3_key)
+        text = fleet_ocr.file_to_text(data, doc.filename or "")
+        parsed = fleet_ocr.parse_driving_licence(text)
+        return _display_date_from_dmy(parsed.get("licenceEnd", ""))
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        print(f"Fleet generated docs: licence expiry OCR fallback failed: {exc}")
+        return ""
+
+
+def _document_context(hire, vehicle: Optional[FleetHireVehicle], db: Optional[Session] = None) -> dict:
     weekly = (
         getattr(vehicle, "vehicle_cost_per_week", None)
         or getattr(hire, "weekly_hire_payment", None)
@@ -210,15 +389,17 @@ def _document_context(hire, vehicle: Optional[FleetHireVehicle]) -> dict:
     end_time = getattr(vehicle, "checkout_time", None)
     make = (getattr(vehicle, "make", None) or getattr(hire, "make", None) or "").strip()
     model = (getattr(vehicle, "model", None) or getattr(hire, "model", None) or "").strip()
+    licence_expiry = _format_date(hire.driving_licence_end) or _licence_expiry_from_saved_doc(db, hire.id)
 
     return {
+        "fleet_reference": (hire.fleet_reference or "").strip(),
         "hirer_name": (hire.driver_name or "").strip(),
         "hirer_address": (hire.driver_address or "").strip(),
         "hirer_postcode": (hire.driver_postcode or "").strip(),
         "hirer_full": " of ".join(part for part in [(hire.driver_name or "").strip(), _address_line(hire)] if part),
         "date_of_birth": _format_date(hire.date_of_birth),
         "driving_licence_number": (hire.driving_licence_number or "").strip(),
-        "licence_expiry": _format_date(hire.driving_licence_end),
+        "licence_expiry": licence_expiry,
         "make": make,
         "model": model,
         "vehicle_description": " ".join(part for part in [make, model] if part),
@@ -261,6 +442,7 @@ def _replace_sample_text(text: str, ctx: dict) -> str:
         "13/07/26": ctx["hire_start_date"],
         "13/07/2026": ctx["hire_start"],
         "03/02/2026": ctx["hire_end"],
+        "26/01/2066": ctx["licence_expiry"],
         "£300.00": ctx["deposit"],
         "£230.00": ctx["weekly"],
     }
@@ -307,6 +489,8 @@ def _render_docx(asset: GeneratedDocumentAsset, ctx: dict) -> bytes:
             _set_paragraph_text(paragraph, f"Vehicle Registration Number -\t{ctx['registration']}")
         elif text.startswith("Agreement Start Date"):
             _set_paragraph_text(paragraph, f"Agreement Start Date -\t{ctx['hire_start']}")
+        elif text.startswith("Expiry Date:"):
+            _set_paragraph_text(paragraph, f"Expiry Date: \t\t{ctx['licence_expiry']}")
         elif text.startswith("Security Deposit"):
             _set_paragraph_text(paragraph, f"Security Deposit -\t\t\t\t{ctx['deposit']}")
         elif text.startswith("Payment Profile"):
@@ -323,12 +507,48 @@ def _render_docx(asset: GeneratedDocumentAsset, ctx: dict) -> bytes:
     return output.getvalue()
 
 
+def _existing_xls_style_idx(ws, row: int, col: int):
+    row_obj = getattr(ws, "_Worksheet__rows", {}).get(row)
+    cell = getattr(row_obj, "_Row__cells", {}).get(col) if row_obj else None
+    return getattr(cell, "xf_idx", None)
+
+
 def _write_xls(ws, row: int, col: int, value):
     if value is not None:
+        xf_idx = _existing_xls_style_idx(ws, row, col)
         ws.write(row, col, value)
+        if xf_idx is not None:
+            row_obj = getattr(ws, "_Worksheet__rows", {}).get(row)
+            cell = getattr(row_obj, "_Row__cells", {}).get(col) if row_obj else None
+            if cell is not None:
+                cell.xf_idx = xf_idx
+
+
+def _ensure_xls_template_packages():
+    try:
+        import xlrd  # noqa: F401
+        import xlutils.copy  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+
+    repo_root = Path(__file__).resolve().parents[3]
+    local_site_packages = (
+        repo_root
+        / ".venv"
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    if local_site_packages.exists():
+        sys.path.insert(0, str(local_site_packages))
+
+    import xlrd  # noqa: F401
+    import xlutils.copy  # noqa: F401
 
 
 def _render_hire_documentation_xls(asset: GeneratedDocumentAsset, ctx: dict) -> bytes:
+    _ensure_xls_template_packages()
     import xlrd
     from xlutils.copy import copy
 
@@ -336,6 +556,7 @@ def _render_hire_documentation_xls(asset: GeneratedDocumentAsset, ctx: dict) -> 
     writable = copy(book)
     ws = writable.get_sheet(0)
 
+    _write_xls(ws, 1, 5, ctx["fleet_reference"])
     _write_xls(ws, 10, 4, ctx["hirer_name"])
     _write_xls(ws, 12, 4, ctx["hirer_address"])
     _write_xls(ws, 18, 4, ctx["hirer_postcode"])
@@ -351,9 +572,9 @@ def _render_hire_documentation_xls(asset: GeneratedDocumentAsset, ctx: dict) -> 
     _write_xls(ws, 25, 9, ctx["hire_end_date"])
     _write_xls(ws, 25, 13, ctx["hire_end_time"])
 
-    _write_xls(ws, 34, 4, ctx["hirer_name"])
-    _write_xls(ws, 40, 4, ctx["hirer_address"])
-    _write_xls(ws, 51, 4, ctx["hirer_postcode"])
+    # Additional driver section stays blank until the business confirms that flow.
+    for row, col in [(34, 4), (40, 4), (51, 4), (53, 4), (55, 4), (58, 5), (61, 4)]:
+        _write_xls(ws, row, col, "")
     _write_xls(ws, 34, 11, ctx["weekly_number"])
     _write_xls(ws, 37, 11, ctx["deposit_number"])
     _write_xls(ws, 40, 11, ctx["total_due_number"])
@@ -372,6 +593,7 @@ def _render_vehicle_inspection_xlsx(asset: GeneratedDocumentAsset, ctx: dict) ->
 
     workbook = load_workbook(asset.path)
     sheet = workbook.active
+    sheet["N3"] = ctx["fleet_reference"]
     sheet["D5"] = ctx["hirer_name"]
     sheet["D7"] = ctx["hirer_address"]
     sheet["D13"] = ctx["hirer_postcode"]

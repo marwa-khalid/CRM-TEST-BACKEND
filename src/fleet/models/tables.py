@@ -190,6 +190,7 @@ class FleetHireVehicle(Base, AuditStampMixin):
     hire_start_time = Column(String(20), nullable=True)
     hire_end_date = Column(Date, nullable=True)
     total_hire_period = Column(String(100), nullable=True)
+    number_of_weekly_payments = Column(String(20), nullable=True)
     hire_insurance_type = Column(String(100), nullable=True)
     insurance_date_received = Column(Date, nullable=True)
     policy_start_date = Column(Date, nullable=True)

@@ -105,8 +105,11 @@ def render_deposit_refund(data: dict, include_logo: bool = True) -> str:
             _row("Deposit Amount", g("deposit")),
             _row("Valeting Fee", g("valeting_fee")),
             _row("Vehicle Damages", g("vehicle_damages")),
+            _row("Additional Charges", g("additional_charges")),
             _row("Excess PPM Charges", g("excess_ppm")),
             _row("Hire Charges Unpaid", g("hire_charges_unpaid")),
+            _row("Adjusted From Deposit", g("adjusted_from_deposit")),
+            _row("Final Charges Due", g("charges_due")),
             _row("Total Deductions", g("total_deductions")),
             _row("Refund Amount", g("refund_amount")),
         ])
@@ -161,7 +164,7 @@ def render_on_hire(data: dict, include_logo: bool = True) -> str:
     g = lambda k: (data.get(k) or "")  # noqa: E731
 
     greeting = _centered_text(f'<p style="margin:0;">Dear {escape(g("driver_name") or "Hirer")},</p>')
-    intro = _centered_text('<p style="margin:0;">Your vehicle is now on hire. Please see the vehicle details below.</p>')
+    intro = _centered_text('<p style="margin:0;">Please see the vehicle details below.</p>')
 
     vehicle = _box(
         _heading("Vehicle Details")
@@ -199,7 +202,7 @@ def render_on_hire(data: dict, include_logo: bool = True) -> str:
 def send_on_hire_email(to: str, subject: str, data: dict, cc: Optional[str] = None) -> dict:
     html = render_on_hire(data)
     # Logo auto-embeds inline via GraphEmailService (cid:companylogo) — not attached.
-    return send_email(to=to, subject=subject or "Your Vehicle is Now On Hire", html=html, cc=cc)
+    return send_email(to=to, subject=subject or "Vehicle On Hire", html=html, cc=cc)
 
 
 # --------------------------------------------------------------------------- #

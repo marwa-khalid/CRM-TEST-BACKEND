@@ -46,6 +46,24 @@ def download_generated_document_route(
     )
 
 
+@router.get("/hire/{hire_id}/generated-documents/{document_key}/print-view")
+def print_generated_document_route(
+    hire_id: int,
+    document_key: str,
+    vehicle_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    html = generated_document_service.get_document_print_view(
+        db,
+        hire_id,
+        tenant_id,
+        document_key,
+        vehicle_id,
+    )
+    return Response(content=html, media_type="text/html; charset=utf-8")
+
+
 @router.get("/hire/{hire_id}/generated-documents/{document_key}/files/{file_key}")
 def get_generated_document_file_route(
     hire_id: int,
