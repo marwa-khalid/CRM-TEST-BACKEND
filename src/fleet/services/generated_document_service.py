@@ -410,6 +410,8 @@ def _document_context(hire, vehicle: Optional[FleetHireVehicle], db: Optional[Se
         "hire_end": _date_time(end_date, end_time),
         "hire_end_date": _format_date(end_date),
         "hire_end_time": str(end_time or "").strip(),
+        "mileage_start": str(getattr(vehicle, "mileage_start", None) or "").strip(),
+        "mileage_end": str(getattr(vehicle, "mileage_end", None) or "").strip(),
         "weekly": _format_money(weekly),
         "weekly_plain": _format_money_plain(weekly),
         "weekly_number": _money_number(weekly),
@@ -603,6 +605,10 @@ def _render_vehicle_inspection_xlsx(asset: GeneratedDocumentAsset, ctx: dict) ->
     sheet["C25"] = ctx["hire_start_time"]
     sheet["J23"] = ctx["hire_end_date"]
     sheet["J25"] = ctx["hire_end_time"]
+    # "Mileage:" label sits at B27; start mileage mirrors the start column (C),
+    # end mileage the end column (J), like the date/time rows above.
+    sheet["C27"] = ctx["mileage_start"]
+    sheet["J27"] = ctx["mileage_end"]
     sheet["D80"] = ctx["hirer_name"]
 
     output = BytesIO()
