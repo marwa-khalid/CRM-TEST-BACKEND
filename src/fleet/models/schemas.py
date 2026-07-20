@@ -13,6 +13,12 @@ class HireUpdate(BaseModel):
     insurance_type: Optional[str] = None
     rental_advisor: Optional[str] = None
     current_position: Optional[str] = None
+    hirer_type: Optional[str] = None
+    taxi_badge_number: Optional[str] = None
+    taxi_badge_name: Optional[str] = None
+    taxi_badge_expiry: Optional[date] = None
+    taxi_badge_council: Optional[str] = None
+    taxi_badge_type: Optional[str] = None
     bank_name: Optional[str] = None
     account_name: Optional[str] = None
     sort_code: Optional[str] = None
@@ -119,6 +125,12 @@ class HireResponse(BaseModel):
     insurance_type: Optional[str] = None
     rental_advisor: Optional[str] = None
     current_position: Optional[str] = None
+    hirer_type: Optional[str] = None
+    taxi_badge_number: Optional[str] = None
+    taxi_badge_name: Optional[str] = None
+    taxi_badge_expiry: Optional[date] = None
+    taxi_badge_council: Optional[str] = None
+    taxi_badge_type: Optional[str] = None
     bank_name: Optional[str] = None
     account_name: Optional[str] = None
     sort_code: Optional[str] = None
@@ -381,17 +393,17 @@ class PaymentResponse(PaymentUpdate):
         from_attributes = True
 
 
-class FleetSmsRequest(BaseModel):
+class FleetWhatsAppRequest(BaseModel):
     mobile: Optional[str] = None
     message: str
     correspondent: Optional[str] = None
     reference: Optional[str] = None
-    sms_phrase: Optional[str] = None
+    phrase: Optional[str] = None
     history_details: Optional[str] = None
     kind: Optional[str] = None
 
 
-class FleetSmsResponse(BaseModel):
+class FleetWhatsAppResponse(BaseModel):
     status: str
     provider: Optional[str] = None
     to: Optional[str] = None

@@ -25,6 +25,8 @@ class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     insurance_type = Column(String(100), nullable=True)
     rental_advisor = Column(String(200), nullable=True)
     current_position = Column(String(100), nullable=True)
+    # taxi_driver | non_taxi_driver — "taxi_driver" unlocks the Taxi Badge step.
+    hirer_type = Column(String(50), nullable=True)
     bank_name = Column(String(200), nullable=True)
     account_name = Column(String(200), nullable=True)
     sort_code = Column(String(20), nullable=True)
@@ -40,6 +42,13 @@ class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     driving_licence_number = Column(String(100), nullable=True)
     national_insurance_number = Column(String(50), nullable=True)
     date_of_birth = Column(Date, nullable=True)
+
+    # --- Taxi Badge (only when hirer_type = taxi_driver) ---
+    taxi_badge_number = Column(String(100), nullable=True)
+    taxi_badge_name = Column(String(200), nullable=True)
+    taxi_badge_expiry = Column(Date, nullable=True)
+    taxi_badge_council = Column(String(200), nullable=True)
+    taxi_badge_type = Column(String(100), nullable=True)
     driving_licence_start = Column(Date, nullable=True)
     driving_licence_end = Column(Date, nullable=True)
 
@@ -93,6 +102,9 @@ class FleetHire(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     initial_amount_due = Column(String(50), nullable=True)
     payment_damage_charges = Column(String(50), nullable=True)
     additional_charges = Column(String(100), nullable=True)
+    # The payment day a reminder was last sent FOR (not when it was sent), so the
+    # daily job stays idempotent even if it runs several times a day.
+    payment_reminder_sent_for = Column(Date, nullable=True)
 
 
 class FleetHirePayment(Base, AuditStampMixin):

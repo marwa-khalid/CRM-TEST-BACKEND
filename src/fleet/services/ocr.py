@@ -455,3 +455,209 @@ def parse_insurance_certificate(text: str) -> Dict[str, str]:
     if end:
         result["policyEndDate"] = end.isoformat()
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Taxi badge (UK private-hire / hackney carriage driver badge)
+# --------------------------------------------------------------------------- #
+# Badge numbers vary by council: "25/05927" (Solihull) or "PD12825" (Wolverhampton),
+# so accept a letter-prefixed and/or slash-separated alphanumeric token.
+_BADGE_NUMBER = re.compile(
+    r"(?:licen[cs]e|driver|badge)\s*(?:number|numb\w*|no\.?)?\s*[:\.\-]*\s*"
+    r"([A-Z]{0,3}\s?\d[\d/\-\s]{2,12}\d)",
+    re.I,
+)
+_BADGE_NAME = re.compile(
+    r"\bname\s*[:\.\-]+\s*([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,3})",
+    re.I,
+)
+_BADGE_EXPIRY = re.compile(
+    r"expir\w*\s*(?:date)?\s*[:\.\-]*\s*(\d{1,2}\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*\d{2,4})",
+    re.I,
+)
+# Lines that are badge chrome/labels rather than the holder's name.
+_NOT_A_NAME = re.compile(
+    r"council|licen|number|expir|driver|hire|hackney|badge|system|patent|verify|"
+    r"tap|phone|metropolitan|borough|city|private|genuine|date|urbs|rure",
+    re.I,
+)
+
+
+def parse_taxi_badge(text: str) -> Dict[str, str]:
+    """Extract fields from a UK taxi (private-hire / hackney) driver badge.
+
+    Best-effort like the other parsers: anything it can't read comes back blank so
+    the user can type it in. Badges differ a lot between councils, so each field is
+    anchored to its label first and only then falls back to a heuristic.
+    """
+    result = {"badgeNumber": "", "name": "", "expiry": "", "council": "", "badgeType": ""}
+    if not text:
+        return result
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    flat = " ".join(lines)
+
+    match = _BADGE_NUMBER.search(flat)
+    if match:
+        result["badgeNumber"] = re.sub(r"\s+", "", match.group(1)).strip("/-.")
+
+    # Name — matched per LINE so it can't run on into the next field ("EXPIRY DATE"),
+    # and falling back to a standalone name-looking line for badges with no label
+    # (e.g. Wolverhampton prints just "Dara Singh").
+    for i, line in enumerate(lines):
+        match = _BADGE_NAME.search(line)
+        if match:
+            result["name"] = _name_words(match.group(1))
+            break
+        if re.match(r"^\s*name\s*[:\.\-]*\s*$", line, re.I) and i + 1 < len(lines):
+            result["name"] = _name_words(lines[i + 1])
+            break
+    if not result["name"]:
+        for line in lines:
+            if _NOT_A_NAME.search(line):
+                continue
+            words = re.findall(r"[A-Za-z][A-Za-z'\-]+", line)
+            if 2 <= len(words) <= 3 and all(len(w) >= 2 for w in words):
+                result["name"] = _name_words(" ".join(words))
+                break
+
+    # Expiry: prefer the labelled date, else the latest future-looking date.
+    match = _BADGE_EXPIRY.search(flat)
+    if match:
+        found = _all_dates(match.group(1))
+        if found:
+            result["expiry"] = found[0].strftime("%d-%m-%Y")
+    if not result["expiry"]:
+        future = [d for d in _all_dates(flat) if d.year >= date.today().year]
+        if future:
+            result["expiry"] = max(future).strftime("%d-%m-%Y")
+
+    # Issuing council — the line mentioning "council", joined with the line above
+    # when the authority name wraps (e.g. "City of" / "Wolverhampton Council").
+    for i, line in enumerate(lines):
+        if "council" in line.lower():
+            parts = [line]
+            prev = lines[i - 1] if i > 0 else ""
+            if prev and len(prev) <= 40 and not re.search(r"licen|name|expir|driver|number|hire", prev, re.I):
+                parts.insert(0, prev)
+            council = re.sub(r"\s+", " ", " ".join(parts)).strip(" .:-")
+            result["council"] = council
+            break
+
+    low = flat.lower()
+    if "hackney" in low:
+        result["badgeType"] = "Hackney Carriage Driver"
+    elif "private hire" in low:
+        result["badgeType"] = "Private Hire Driver"
+
+    return result
+
+
+# --- Bank transfer receipt -------------------------------------------------
+# Receipts differ by bank, and crucially by LAYOUT: statement exports (NatWest,
+# Barclays) print the label on one line and the value on the next, while chat-style
+# app receipts (Monzo, Revolut) keep them on one line. _label_value handles both.
+# Anything unreadable comes back blank for the user to type in.
+_RX_AMOUNT_LABEL = re.compile(
+    r"\b(?:credit|amount(?:\s+paid)?|total|paid|payment|you\s+sent|sent|transfer(?:red)?)\b", re.I)
+_RX_DATE_LABEL = re.compile(
+    r"\b(?:date(?:\s+(?:posted|paid|sent))?|paid\s+on|sent\s+on|value\s+date|transaction\s+date)\b", re.I)
+# On a credit, the counterparty name is what the bank calls the "description".
+_RX_PAYER_LABEL = re.compile(
+    r"\b(?:description|from|sender|payer|paid\s+by|account\s+holder)\b", re.I)
+_RX_PAYEE_LABEL = re.compile(r"\b(?:payee|recipient|paid\s+to|beneficiary)\b", re.I)
+_RX_REFERENCE_LABEL = re.compile(r"\b(?:reference|payment\s+ref\w*|ref(?:\s*(?:no|number))?)\b", re.I)
+
+_RX_MONEY = re.compile(r"(?:GBP|£)?\s*([0-9][0-9,]*(?:\.\d{2})?)", re.I)
+_RX_SORT_CODE = re.compile(r"\b(\d{2}[-\s]?\d{2}[-\s]?\d{2})\b")
+_RX_ACCOUNT_NO = re.compile(r"\b(\d{8})\b")
+_RX_NAMEISH = re.compile(r"[A-Za-z][A-Za-z'&\-]*(?:\s+[A-Za-z0-9'&\-]+){0,5}")
+# Lines that are chrome, not values — never treat these as a name.
+_RECEIPT_NOISE = re.compile(
+    r"^(?:no more information|not available|n/?a|-+|transaction details?|more information)\s*$", re.I)
+
+
+def _money_str(raw: str) -> str:
+    """'£1,250.5' -> '1250.50'; blank when it isn't a number."""
+    match = _RX_MONEY.search(raw or "")
+    if not match:
+        return ""
+    try:
+        return f"{float(match.group(1).replace(',', '')):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _label_value(lines: List[str], label: re.Pattern) -> str:
+    """Text following a label — same line if present, else the line below.
+
+    The line-below case is what statement PDFs need ("Date posted" / "17 July
+    2026"). Noise lines are skipped so a label at the end of a section doesn't
+    pick up a heading.
+    """
+    for i, line in enumerate(lines):
+        match = label.search(line)
+        if not match:
+            continue
+        rest = line[match.end():].strip(" :-\t|")
+        if rest:
+            return rest
+        if i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            if nxt and not _RECEIPT_NOISE.match(nxt):
+                return nxt
+    return ""
+
+
+def parse_payment_receipt(text: str) -> Dict[str, str]:
+    """Extract payment fields from a bank transfer receipt or statement export."""
+    result = {
+        "amount": "", "paymentDate": "", "reference": "",
+        "payer": "", "payee": "", "sortCode": "", "accountNumber": "",
+        "paymentMode": "bank_transfer",
+    }
+    if not text:
+        return result
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    flat = " ".join(lines)
+
+    # Amount: the labelled value first, else the largest figure on the receipt
+    # (apps print a running balance, which would otherwise win on some layouts).
+    result["amount"] = _money_str(_label_value(lines, _RX_AMOUNT_LABEL))
+    if not result["amount"]:
+        amounts = [a for a in (_money_str(m) for m in re.findall(r"(?:GBP|£)\s*[0-9][0-9,]*(?:\.\d{2})?", flat)) if a]
+        if amounts:
+            result["amount"] = max(amounts, key=float)
+
+    # Date: the labelled value first, else the latest date that isn't in the future.
+    found = _all_dates(_label_value(lines, _RX_DATE_LABEL))
+    if found:
+        result["paymentDate"] = found[0].strftime("%d-%m-%Y")
+    if not result["paymentDate"]:
+        past = [d for d in _all_dates(flat) if d <= date.today()]
+        if past:
+            result["paymentDate"] = max(past).strftime("%d-%m-%Y")
+
+    for key, label in (("payer", _RX_PAYER_LABEL), ("payee", _RX_PAYEE_LABEL),
+                       ("reference", _RX_REFERENCE_LABEL)):
+        value = _label_value(lines, label)
+        if not value:
+            continue
+        if key == "reference":
+            result[key] = re.sub(r"\s+", " ", value).strip(" -_/")
+            continue
+        match = _RX_NAMEISH.search(value)
+        if match:
+            result[key] = re.sub(r"\s+", " ", match.group(0)).strip()
+
+    match = _RX_SORT_CODE.search(flat)
+    if match:
+        digits = re.sub(r"\D", "", match.group(1))
+        result["sortCode"] = f"{digits[:2]}-{digits[2:4]}-{digits[4:6]}"
+
+    match = _RX_ACCOUNT_NO.search(flat)
+    if match:
+        result["accountNumber"] = match.group(1)
+
+    return result
