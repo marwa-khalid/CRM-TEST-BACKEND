@@ -17,6 +17,12 @@ def list_notifications(db: Session = Depends(get_session), current_user=Depends(
         CalendarEventService.process_due_reminders(db)
     except Exception:
         db.rollback()
+    # Fleet expiry reminders (road tax / plate / MOT) use the same lazy design.
+    try:
+        from fleet.services.reminder_watcher import process_fleet_reminders
+        process_fleet_reminders(db)
+    except Exception:
+        db.rollback()
     return list_for_user(db, current_user)
 
 

@@ -14,7 +14,7 @@ import re
 import urllib.error
 import urllib.request
 from datetime import date
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pytesseract
 from PIL import Image, ImageOps
@@ -660,4 +660,540 @@ def parse_payment_receipt(text: str) -> Dict[str, str]:
     if match:
         result["accountNumber"] = match.group(1)
 
+    return result
+
+
+# --- V5C (vehicle registration certificate) ---------------------------------
+# The V5C prints each value against a standard DVLA field code, which survives OCR
+# noise far better than the English label does. So we split the document on those
+# codes and take everything up to the next code as that field's value, stripping
+# the printed label if OCR kept it.
+#   A   Registration mark          E    VIN / chassis number
+#   B   Date of first registration P.1  Engine capacity (cc)
+#   D.1 Make                       P.3  Fuel type
+#   D.2 Model                      S.1  Number of seats
+#   D.3 Body type                  R    Colour
+_V5C_CODES = r"A|B|D\.?1|D\.?2|D\.?3|D\.?5|E|P\.?1|P\.?3|S\.?1|R"
+_V5C_CODE_RE = re.compile(rf"(?<![A-Za-z0-9.])({_V5C_CODES})(?![A-Za-z0-9])[:\s.\-]*")
+_V5C_CODE_KEY = {
+    "a": "registration", "b": "dateOfFirstRegistration", "d1": "make",
+    "d3": "model", "d5": "bodyType", "e": "chassisNumber",
+    "p1": "engineSizeCc", "p3": "fuelType", "s1": "numberOfSeats",
+    # D.2 is "Type" (a manufacturer code such as HE15U(A)), NOT the model.
+}
+# Printed labels to drop when OCR captured them alongside the code.
+_V5C_LABELS = re.compile(
+    r"^(?:registration\s+mark|registration\s+number"
+    r"|date\s+of\s+first\s+registration(?:\s+in\s+the\s+uk)?|make|model"
+    r"|body\s+type|vin(?:\s*/\s*chassis)?(?:\s*/\s*frame)?(?:\s+no\.?|\s+number)?"
+    r"|chassis\s+number|engine\s+capacity(?:\s*\(cc\))?|cylinder\s+capacity(?:\s*\(cc\))?"
+    r"|type\s+of\s+fuel|fuel\s+type|type|number\s+of\s+seats(?:,?\s*including\s+driver)?"
+    r"|seating\s+capacity|colour|color)(?!\w)[:\s.,\-]*", re.I)
+_V5C_SHAPES = {
+    "registration": re.compile(r"^([A-Z]{2}\d{2}\s?[A-Z]{3}|[A-Z0-9]{2,4}\s?[A-Z0-9]{1,4})"),
+    "chassisNumber": re.compile(r"^([A-HJ-NPR-Z0-9]{11,17})"),
+    "engineSizeCc": re.compile(r"^(\d{3,5})"),
+    "numberOfSeats": re.compile(r"^(\d{1,2})"),
+    "fuelType": re.compile(r"^([A-Za-z][A-Za-z/ ]{2,29})"),
+    "make": re.compile(r"^([A-Za-z][A-Za-z0-9\- ]{1,38})"),
+    "model": re.compile(r"^([A-Za-z0-9][A-Za-z0-9\-. ]{1,48})"),
+    "bodyType": re.compile(r"^([A-Za-z0-9][A-Za-z0-9\- ]{1,38})"),
+    "dateOfFirstRegistration": re.compile(
+        r"^(\d{1,2}\s*[/\-. ]\s*\d{1,2}\s*[/\-. ]\s*\d{2,4}"
+        r"|\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\s+\d{2,4})"),
+}
+_V5C_VARIANT = re.compile(r"^\s*variant[:\s.\-]+(\S.{0,40})$", re.I)
+_V5C_REG_SHAPE = re.compile(r"\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b")
+_V5C_VIN_SHAPE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b")
+# The document reference is an 11-digit number printed at the top of the V5C.
+_V5C_DOC_REF = re.compile(
+    r"(?:document\s+reference(?:\s+number)?|doc\s*ref)\D{0,40}?(\d{4}\s?\d{3}\s?\d{4})", re.I)
+# Spaces are required so the machine-readable barcode line (all underscores and
+# long digit runs) can't be mistaken for a reference.
+_V5C_DOC_REF_SHAPE = re.compile(r"\b(\d{4}\s\d{3}\s\d{4})\b")
+_V5C_DOORS = re.compile(r"\b(?:number\s+of\s+)?doors?\b\D{0,10}(\d{1,2})\b", re.I)
+_V5C_DOORS_PREFIX = re.compile(r"\b(\d)\s*-?\s*door\b", re.I)
+_V5C_TRANSMISSION = re.compile(r"\b(automatic|manual|semi[- ]?automatic|cvt)\b", re.I)
+
+
+def _v5c_segments(flat: str) -> Dict[str, str]:
+    """Map each DVLA field code to the text between it and the next code."""
+    out: Dict[str, str] = {}
+    matches = list(_V5C_CODE_RE.finditer(flat))
+    for i, match in enumerate(matches):
+        code = match.group(1).replace(".", "").lower()
+        key = _V5C_CODE_KEY.get(code)
+        if not key or key in out:  # first occurrence wins
+            continue
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(flat)
+        segment = _V5C_LABELS.sub("", flat[match.end():end].strip())
+        shape = _V5C_SHAPES.get(key)
+        hit = shape.match(segment.strip()) if shape else None
+        if hit:
+            out[key] = re.sub(r"\s+", " ", hit.group(1)).strip(" .:-")
+    return out
+
+
+def parse_v5c(text: str) -> Dict[str, str]:
+    """Extract vehicle fields from a V5C logbook.
+
+    Best-effort like the other parsers: anything unreadable comes back blank so
+    the Fleet Administrator can type it in and correct what OCR did read.
+    """
+    result = {
+        "registration": "", "make": "", "model": "", "manufacturer": "", "variant": "",
+        "numberOfDoors": "", "numberOfSeats": "", "bodyType": "", "fuelType": "",
+        "transmission": "", "engineSizeCc": "", "v5cDocumentReference": "",
+        "chassisNumber": "", "dateOfFirstRegistration": "", "dateDelivered": "",
+    }
+    if not text:
+        return result
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    flat = " ".join(lines)
+    result.update(_v5c_segments(flat))
+
+    # Shape-based fallbacks for when the field code itself was misread.
+    if not result["registration"] or not _V5C_REG_SHAPE.match(result["registration"]):
+        match = _V5C_REG_SHAPE.search(flat.upper())
+        if match:
+            result["registration"] = match.group(1)
+    if not result["chassisNumber"]:
+        match = _V5C_VIN_SHAPE.search(flat.upper())
+        if match:
+            result["chassisNumber"] = match.group(1)
+
+    match = _V5C_DOC_REF.search(flat) or _V5C_DOC_REF_SHAPE.search(flat)
+    if match:
+        result["v5cDocumentReference"] = re.sub(r"\D", "", match.group(1))
+
+    for line in lines:
+        match = _V5C_VARIANT.match(line)
+        if match:
+            result["variant"] = match.group(1).strip(" .,:-")
+            break
+
+    match = _V5C_DOORS.search(flat) or _V5C_DOORS_PREFIX.search(flat)
+    if match:
+        result["numberOfDoors"] = match.group(1)
+    if not result["numberOfDoors"] and result["bodyType"]:
+        # "5 DOOR HATCHBACK" carries the door count in the body type.
+        match = re.match(r"\s*(\d)\s*door", result["bodyType"], re.I)
+        if match:
+            result["numberOfDoors"] = match.group(1)
+
+    match = _V5C_TRANSMISSION.search(flat)
+    if match:
+        value = match.group(1)
+        result["transmission"] = value.upper() if len(value) <= 3 else value.title()
+
+    if result["dateOfFirstRegistration"]:
+        # Normalise "01 03 2021" (space separated) before parsing.
+        raw = re.sub(r"\s+", "/", result["dateOfFirstRegistration"].strip()) \
+            if re.fullmatch(r"\d{1,2}\s+\d{1,2}\s+\d{2,4}", result["dateOfFirstRegistration"].strip()) \
+            else result["dateOfFirstRegistration"]
+        found = _all_dates(raw)
+        result["dateOfFirstRegistration"] = found[0].strftime("%d-%m-%Y") if found else ""
+
+    # The V5C carries no manufacturer or variant of its own — make and model are
+    # the closest equivalents, so seed them and let the user refine.
+    result["manufacturer"] = result["manufacturer"] or result["make"]
+    result["variant"] = result["variant"] or result["model"]
+    return result
+
+
+# --- Plating expiry / MOT certificates --------------------------------------
+# Both are issuer-branded documents with a contact block at the top and dates
+# below, so they share the contact extraction and differ only in which dates and
+# reference numbers they carry.
+_CERT_EMAIL = re.compile(r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b")
+# UK numbers: 01/02/03 landline, 07 mobile, 08 non-geographic, optional +44.
+_CERT_PHONE = re.compile(r"(?:\+44\s?|\b0)(?:\d[\d\s\-()]{8,13}\d)")
+_CERT_PHONE_LABELLED = re.compile(
+    r"(?:tel(?:ephone)?|phone|contact(?:\s+(?:no|number))?)\D{0,6}((?:\+44\s?|0)[\d\s\-()]{8,15})", re.I)
+_PLATE_NUMBER = re.compile(
+    r"(?:plate|licence|license)\s*(?:plate)?\s*(?:no\.?|number)[\s:.\-]*([A-Z0-9][A-Z0-9/\-]{2,15})", re.I)
+_DATE_LABELLED = {
+    "platingStartDate": r"(?:plate|plating|licence|license)?\s*(?:start|issue[d]?|valid\s+from|from)\s*(?:date)?",
+    "platingExpiryDate": r"(?:plate|plating|licence|license)?\s*(?:expiry|expires?|valid\s+(?:to|until)|end)\s*(?:date)?",
+    "lastMotDate": r"(?:test|mot|issue[d]?)\s*(?:date|on)?",
+    "motExpiryDate": r"(?:expiry|expires?|valid\s+until|test\s+expiry)\s*(?:date)?",
+}
+_DATE_VALUE = (r"\D{0,15}(\d{1,2}\s*[/\-. ]\s*\d{1,2}\s*[/\-. ]\s*\d{2,4}"
+               r"|\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\s+\d{2,4})")
+# Document titles and bare section labels — never the issuer's name.
+_CERT_TITLE = re.compile(
+    r"^(?:.*\bcertificates?\b.*|licensed\s+vehicle\s+plate|licensing\s+authority"
+    r"|vehicle\s+licence|mot\s+test(?:\s+result)?s?|plating\s+details"
+    r"|(?:service|tax|sales)?\s*invoice|receipt|garage\s+details|statement"
+    r"|address|postcode|telephone|phone|email(?:\s+address)?|contact(?:\s+number)?)$", re.I)
+
+
+def _cert_contact(lines: List[str], flat: str) -> Dict[str, str]:
+    """Name / address / postcode / phones / email shared by both certificates."""
+    out = {"name": "", "address": "", "postcode": "", "telephone": "", "contactNumber": "", "email": ""}
+
+    match = _CERT_EMAIL.search(flat)
+    if match:
+        out["email"] = match.group(1)
+
+    out["postcode"] = _find_postcode(flat)
+
+    # Prefer labelled phone numbers; otherwise take the first one or two seen.
+    labelled = [re.sub(r"\s{2,}", " ", m.group(1)).strip() for m in _CERT_PHONE_LABELLED.finditer(flat)]
+    loose = [re.sub(r"\s{2,}", " ", m.group(0)).strip() for m in _CERT_PHONE.finditer(flat)]
+    numbers: List[str] = []
+    for candidate in labelled + loose:
+        cleaned = candidate.strip(" -()")
+        digits = re.sub(r"\D", "", cleaned)
+        if 10 <= len(digits) <= 13 and cleaned not in numbers:
+            numbers.append(cleaned)
+    if numbers:
+        out["telephone"] = numbers[0]
+    if len(numbers) > 1:
+        out["contactNumber"] = numbers[1]
+
+    # The issuer name is the first line near the top that is not the document
+    # title, a bare field label, an address line, or a phone/email/postcode.
+    for line in lines[:10]:
+        candidate = line.strip(" .:-")
+        if not candidate or len(candidate) > 80:
+            continue
+        if _CERT_TITLE.match(candidate):
+            continue
+        if candidate[0].isdigit():  # "14 Station Road" — address, not a name
+            continue
+        if _CERT_EMAIL.search(candidate) or _CERT_PHONE_LABELLED.search(candidate):
+            continue
+        if _find_postcode(candidate):
+            continue
+        if not re.search(r"[A-Za-z]{3}", candidate):
+            continue
+        out["name"] = re.sub(r"\s+", " ", candidate)
+        break
+
+    # Address: lines after the name up to the postcode line, minus noise.
+    if out["name"]:
+        try:
+            start = next(i for i, ln in enumerate(lines) if out["name"][:20].lower() in ln.lower()) + 1
+        except StopIteration:
+            start = 1
+        parts: List[str] = []
+        for line in lines[start:start + 6]:
+            if _CERT_EMAIL.search(line) or _CERT_PHONE_LABELLED.search(line):
+                continue
+            parts.append(line)
+            if out["postcode"] and out["postcode"].replace(" ", "").lower() in line.replace(" ", "").lower():
+                break
+        address = ", ".join(p.strip(" ,") for p in parts if p.strip())
+        if out["postcode"]:
+            address = _PC_ANY.sub("", address)
+        out["address"] = re.sub(r"[\s,]+", " ", address).strip(" ,")
+    return out
+
+
+def _labelled_date(flat: str, label: str) -> str:
+    match = re.search(label + _DATE_VALUE, flat, re.I)
+    if not match:
+        return ""
+    raw = match.group(1)
+    if re.fullmatch(r"\d{1,2}\s+\d{1,2}\s+\d{2,4}", raw.strip()):
+        raw = re.sub(r"\s+", "/", raw.strip())
+    found = _all_dates(raw)
+    return found[0].strftime("%d-%m-%Y") if found else ""
+
+
+# --- Licensing authority contact block -------------------------------------
+# A plating certificate carries two addresses: the council's and the
+# proprietor's (ours). Anchoring on the council line keeps them apart.
+_COUNCIL_LINE = re.compile(r"\bcouncil\b|\blicensing authority\b", re.I)
+# Statutory titles mention no council but would otherwise look like headings.
+_ACT_TITLE = re.compile(r"\bact\s+\d{4}\b|miscellaneous\s+provisions", re.I)
+# Once we reach the proprietor block, any postcode below belongs to them.
+_PROPRIETOR_MARKER = re.compile(
+    r"^\s*(?:proprietor|name|address|of)\b|hereby\s+(?:grant|license)", re.I)
+# Name fragments that mean the council name wrapped onto this line.
+_NAME_CONTINUES = re.compile(r"^(?:borough|city|county|district|metropolitan|council)\b", re.I)
+_NAME_PREFIX = re.compile(r"^(?:city|borough|county|district)\s+of$", re.I)
+_NAME_TAIL = re.compile(r"\s+(?:hereby|do\s+hereby)\b.*$", re.I)
+
+
+def _authority_contact(lines: List[str]) -> Dict[str, str]:
+    """Council name, address and postcode, taken from the council's own block."""
+    out = {"name": "", "address": "", "postcode": ""}
+
+    council_idx = [
+        i for i, ln in enumerate(lines)
+        if _COUNCIL_LINE.search(ln) and not _ACT_TITLE.search(ln)
+    ]
+    if not council_idx:
+        return out
+
+    # --- Name: the first council line, plus any lines it wrapped from. ---
+    i = council_idx[0]
+    name = _NAME_TAIL.sub("", lines[i].strip(" .,:-"))
+    j = i - 1
+    while j >= 0 and (_NAME_CONTINUES.match(name) or _NAME_PREFIX.match(lines[j].strip())):
+        previous = lines[j].strip(" .,:-")
+        if not previous or len(previous) > 40 or any(ch.isdigit() for ch in previous):
+            break
+        name = f"{previous} {name}"
+        j -= 1
+    if name.isupper():
+        name = name.title().replace(" Of ", " of ")
+    out["name"] = re.sub(r"\s+", " ", name).strip(" ,")
+
+    # --- Address: prefer a single line holding both the council and a postcode
+    # (councils often print their address in the footer), else walk down from a
+    # council line, stopping before the proprietor block. ---
+    for idx, line in enumerate(lines):
+        if _COUNCIL_LINE.search(line) and _find_postcode(line):
+            out["postcode"] = _find_postcode(line)
+            body = _PC_ANY.sub("", line)
+            if out["name"]:
+                body = re.sub(re.escape(out["name"]), "", body, flags=re.I)
+            out["address"] = re.sub(r"[\s,]+", " ", body).strip(" ,.-")
+            return out
+
+    for start in council_idx:
+        parts: List[str] = []
+        for line in lines[start + 1:start + 9]:
+            if _PROPRIETOR_MARKER.search(line):
+                break
+            postcode = _find_postcode(line)
+            if postcode:
+                out["postcode"] = postcode
+                remainder = _PC_ANY.sub("", line).strip(" ,.-")
+                if remainder:
+                    parts.append(remainder)
+                out["address"] = re.sub(r"[\s,]+", " ", ", ".join(parts)).strip(" ,")
+                return out
+            if line.strip():
+                parts.append(line.strip(" ,.-"))
+    return out
+
+
+def parse_plating_certificate(text: str) -> Dict[str, str]:
+    """Extract the licensing authority contact block and plating details."""
+    result = {
+        "licensingAuthority": "", "address": "", "postcode": "", "telephone": "",
+        "contactNumber": "", "emailAddress": "", "plateNumber": "",
+        "platingStartDate": "", "platingExpiryDate": "",
+    }
+    if not text:
+        return result
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    flat = " ".join(lines)
+
+    contact = _cert_contact(lines, flat)
+    authority = _authority_contact(lines)
+    # Name/address/postcode come from the council block; phones and email are
+    # unambiguous enough to take from the document as a whole.
+    result["licensingAuthority"] = authority["name"] or contact["name"]
+    result["address"] = authority["address"] if authority["name"] else contact["address"]
+    result["postcode"] = authority["postcode"] if authority["name"] else contact["postcode"]
+    result["telephone"] = contact["telephone"]
+    result["contactNumber"] = contact["contactNumber"]
+    result["emailAddress"] = contact["email"]
+
+    match = _PLATE_NUMBER.search(flat)
+    if match:
+        result["plateNumber"] = re.sub(r"\s+", "", match.group(1)).strip("/-.")
+
+    result["platingStartDate"] = _labelled_date(flat, _DATE_LABELLED["platingStartDate"])
+    result["platingExpiryDate"] = _labelled_date(flat, _DATE_LABELLED["platingExpiryDate"])
+
+    # Fall back to the two dates on the document: earliest = start, latest = expiry.
+    dates = sorted(set(_all_dates(flat)))
+    if not result["platingStartDate"] and dates:
+        result["platingStartDate"] = dates[0].strftime("%d-%m-%Y")
+    if not result["platingExpiryDate"] and len(dates) > 1:
+        result["platingExpiryDate"] = dates[-1].strftime("%d-%m-%Y")
+    return result
+
+
+# --- DVSA MOT test certificate (VT20) --------------------------------------
+# The VT20 defeats label-based parsing: its text layer emits every VALUE first
+# and dumps the field LABELS in a block at the end, so "Expiry date" is nowhere
+# near the date it labels. These rules key off the form's structure instead.
+_DVSA_FORM = re.compile(
+    r"\bVT20\b|issued\s+by\s+DVSA|driver\s*(?:&|and)\s*vehicle\s+standards\s+agency"
+    r"|dvsa\.gov\.uk|check-mot-history", re.I)
+# "54739   SWIFT REPAIRS LIMITED" — the VTS number then the testing organisation.
+_DVSA_TEST_CENTRE = re.compile(r"^\s*(\d{4,6})\s+([A-Z][A-Za-z0-9&'’\-. ]{3,60})\s*$")
+# Mileage-history rows pair a reading with a date ("84 miles 10.05.2024") and
+# must never be mistaken for the test date.
+_DVSA_MILEAGE_ROW = re.compile(r"\d[\d,]*\s*miles", re.I)
+# DVSA's own helpline details appear on every certificate — they belong to the
+# agency, not to the test centre, so they must not be stored as its contact.
+_DVSA_CONTACT = re.compile(r"@dvsa\.gov\.uk|0300\s*123\s*9000", re.I)
+
+
+def _dvsa_test_dates(lines: List[str]) -> tuple:
+    """Test date and expiry: the one line holding two dates a year apart."""
+    for line in lines:
+        if _DVSA_MILEAGE_ROW.search(line):
+            continue
+        found = _all_dates(line)
+        if len(found) != 2:
+            continue
+        gap = (found[1] - found[0]).days
+        # An MOT runs twelve months; allow for leap years and same-day renewals.
+        if 358 <= gap <= 372:
+            return found[0], found[1]
+    return None, None
+
+
+def _parse_dvsa_certificate(lines: List[str], flat: str, result: Dict[str, str]) -> Dict[str, str]:
+    """Structure-driven extraction for the DVSA VT20 certificate."""
+    for line in lines:
+        match = _DVSA_TEST_CENTRE.match(line)
+        if match:
+            result["motCentreName"] = match.group(2).strip()
+            break
+
+    # Location of the test — the line carrying a postcode.
+    for line in lines:
+        postcode = _find_postcode(line)
+        if postcode and not _DVSA_CONTACT.search(line):
+            result["postcode"] = postcode
+            body = _PC_ANY.sub("", line)
+            result["address"] = re.sub(r"[\s,]+", " ", body).strip(" ,.-")
+            break
+
+    tested, expires = _dvsa_test_dates(lines)
+    if tested:
+        result["lastMotDate"] = tested.strftime("%d-%m-%Y")
+    if expires:
+        result["motExpiryDate"] = expires.strftime("%d-%m-%Y")
+
+    # Deliberately no telephone/email: the only ones printed are DVSA's helpline.
+    return result
+
+
+def parse_mot_certificate(text: str) -> Dict[str, str]:
+    """Extract the MOT centre contact block and the MOT test/expiry dates."""
+    result = {
+        "motCentreName": "", "address": "", "postcode": "", "telephone": "",
+        "emailAddress": "", "lastMotDate": "", "motExpiryDate": "",
+    }
+    if not text:
+        return result
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    flat = " ".join(lines)
+
+    if _DVSA_FORM.search(flat):
+        dvsa = _parse_dvsa_certificate(lines, flat, dict(result))
+        if dvsa.get("lastMotDate") or dvsa.get("motExpiryDate"):
+            return dvsa
+        # Unrecognised DVSA-ish layout — the generic path is a better guess than
+        # returning nothing.
+
+    contact = _cert_contact(lines, flat)
+    result["motCentreName"] = contact["name"]
+    result["address"] = contact["address"]
+    result["postcode"] = contact["postcode"]
+    result["telephone"] = contact["telephone"]
+    result["emailAddress"] = contact["email"]
+
+    result["motExpiryDate"] = _labelled_date(flat, _DATE_LABELLED["motExpiryDate"])
+    result["lastMotDate"] = _labelled_date(flat, _DATE_LABELLED["lastMotDate"])
+
+    # An MOT runs a year: test date is the earliest date, expiry the latest.
+    dates = sorted(set(_all_dates(flat)))
+    if not result["lastMotDate"] and dates:
+        result["lastMotDate"] = dates[0].strftime("%d-%m-%Y")
+    if not result["motExpiryDate"] and len(dates) > 1:
+        result["motExpiryDate"] = dates[-1].strftime("%d-%m-%Y")
+    # A test date can't be after its own expiry — if the labels crossed, swap.
+    both = _all_dates(f"{result['lastMotDate']} {result['motExpiryDate']}")
+    if len(both) == 2 and both[0] > both[1]:
+        result["lastMotDate"], result["motExpiryDate"] = result["motExpiryDate"], result["lastMotDate"]
+    return result
+
+
+# --- Service invoice ---------------------------------------------------------
+# A garage invoice: contact block at the top (shared with the certificate
+# parsers) plus mileage, service date and an invoice/job reference.
+_INVOICE_MILEAGE = re.compile(
+    r"(?:mileage|odometer|miles|mls)\D{0,12}(\d{1,3}(?:,\d{3})+|\d{3,7})", re.I)
+_INVOICE_MILEAGE_TRAILING = re.compile(
+    r"\b(\d{1,3}(?:,\d{3})+|\d{4,7})\s*(?:miles|mls|mi)\b", re.I)
+# The separator is deliberately narrow — "\W{0,4}" let "Statement / Invoice /
+# Estimate" capture "Estimate", and the digit requirement below rejects
+# "Invoice Date:" capturing the word "Date".
+_INVOICE_REFERENCE = re.compile(
+    r"(?:invoice|job|case|order|wip|rep\.?-?order)\s*(?:no\.?|number|#)?[\s:.\-]*"
+    r"([A-Z0-9][A-Z0-9/\-]{2,20})", re.I)
+_INVOICE_SERVICED_ON = (
+    r"(?:service(?:d)?\s*(?:date|on)?|date\s+of\s+service|invoice\s+date|date)")
+_INVOICE_BOOKED = r"(?:booked(?:\s+for)?|appointment|due\s+in)\s*(?:date)?"
+_INVOICE_TIME = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\s*(am|pm)?\b", re.I)
+
+# 10,000 miles between services — the default the user story specifies.
+SERVICE_INTERVAL_MILES = 10000
+
+
+def _mileage_int(raw: str) -> Optional[int]:
+    digits = re.sub(r"\D", "", raw or "")
+    return int(digits) if digits else None
+
+
+def parse_service_invoice(text: str) -> Dict[str, str]:
+    """Extract garage contact details and service info from a garage invoice."""
+    result = {
+        "garageName": "", "address": "", "postcode": "", "contactNumber": "", "email": "",
+        "serviceBookedDate": "", "serviceBookedTime": "", "servicedAtMileage": "",
+        "servicedOn": "", "nextServiceDueAt": "", "caseReference": "",
+    }
+    if not text:
+        return result
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    flat = " ".join(lines)
+
+    contact = _cert_contact(lines, flat)
+    result["garageName"] = contact["name"]
+    result["address"] = contact["address"]
+    result["postcode"] = contact["postcode"]
+    # An invoice usually prints one number; prefer whichever was labelled.
+    result["contactNumber"] = contact["telephone"] or contact["contactNumber"]
+    result["email"] = contact["email"]
+
+    match = _INVOICE_MILEAGE.search(flat) or _INVOICE_MILEAGE_TRAILING.search(flat)
+    if match:
+        mileage = _mileage_int(match.group(1))
+        if mileage:
+            result["servicedAtMileage"] = str(mileage)
+            # Next Service Due At = Serviced At Mileage + 10,000 (amendable later).
+            result["nextServiceDueAt"] = str(mileage + SERVICE_INTERVAL_MILES)
+
+    result["servicedOn"] = _labelled_date(flat, _INVOICE_SERVICED_ON)
+    result["serviceBookedDate"] = _labelled_date(flat, _INVOICE_BOOKED)
+    if not result["servicedOn"]:
+        past = [d for d in _all_dates(flat) if d <= date.today()]
+        if past:
+            result["servicedOn"] = max(past).strftime("%d-%m-%Y")
+
+    match = _INVOICE_TIME.search(flat)
+    if match:
+        hour, minute, meridiem = int(match.group(1)), match.group(2), (match.group(3) or "").lower()
+        if meridiem == "pm" and hour < 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        result["serviceBookedTime"] = f"{hour:02d}:{minute}"
+
+    # A reference always contains a digit — that alone rules out the label words
+    # ("Date", "Estimate", "Value") that sit next to "Invoice" on real invoices.
+    for line in lines:
+        for match in _INVOICE_REFERENCE.finditer(line):
+            candidate = match.group(1).strip(" -/.")
+            if candidate and any(ch.isdigit() for ch in candidate):
+                result["caseReference"] = candidate
+                break
+        if result["caseReference"]:
+            break
     return result

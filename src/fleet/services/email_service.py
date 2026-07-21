@@ -257,3 +257,86 @@ def render_pay_hirer(data: dict, include_logo: bool = True) -> str:
 def send_pay_hirer_email(to: str, subject: str, data: dict, cc: Optional[str] = None) -> dict:
     html = render_pay_hirer(data)
     return send_email(to=to, subject=subject or "Pay Hirer", html=html, cc=cc)
+
+
+# --------------------------------------------------------------------------- #
+# Plating / MOT appointment passed (same boxed visual language)
+# --------------------------------------------------------------------------- #
+# Both go to the Fleet inbox rather than the hirer — they are internal records
+# that an appointment was attended and passed.
+FLEET_INBOX = "Fleet@nationwideassist.co.uk"
+
+
+def render_plating_passed(data: dict, include_logo: bool = True) -> str:
+    g = lambda k: (data.get(k) or "")  # noqa: E731
+    registration = g("registration") or "The vehicle"
+
+    intro = _centered_text(
+        f'<p style="margin:0;">{escape(registration)} has attended and passed the plating appointment.</p>'
+    )
+    details = _box(
+        _heading("Plating Details")
+        + _divider().join([
+            _row("Licensing Authority", g("licensing_authority")),
+            _row("Plate Number", g("plate_number")),
+            _row("Plating Start", g("plating_start")),
+            _row("Plating Expiry", g("plating_expiry")),
+        ])
+    )
+
+    logo = ('<div style="text-align:center;">' + _LOGO_IMG + "</div>") if include_logo else ""
+    return (
+        '<div style="font-family:Arial,sans-serif;background:#ffffff;padding:20px;color:#334155;">'
+        + logo
+        + intro
+        + details
+        + '<div style="text-align:center;font-size:12px;border-top:1px solid #eee;padding-top:20px;margin-top:10px;">'
+        '<p style="font-weight:600;">Kind regards,<br>Skyline Car Hire (UK) Ltd</p></div>'
+        "</div>"
+    )
+
+
+def render_mot_passed(data: dict, include_logo: bool = True) -> str:
+    g = lambda k: (data.get(k) or "")  # noqa: E731
+    registration = g("registration") or "The vehicle"
+    last_mot = g("last_mot")
+    # "…passed the MOT appointment on 05/01/2023." — only when we know the date,
+    # otherwise the sentence trails off mid-clause as it does in the sample.
+    when = f" on {escape(last_mot)}" if last_mot else ""
+
+    intro = _centered_text(
+        f'<p style="margin:0;">{escape(registration)} has attended and passed the MOT appointment{when}.</p>'
+    )
+    details = _box(
+        _heading("MOT Details")
+        + _divider().join([
+            _row("MOT Centre Name", g("mot_centre_name")),
+            _row("Last MOT", last_mot),
+            _row("MOT Expiry", g("mot_expiry")),
+        ])
+    )
+
+    logo = ('<div style="text-align:center;">' + _LOGO_IMG + "</div>") if include_logo else ""
+    return (
+        '<div style="font-family:Arial,sans-serif;background:#ffffff;padding:20px;color:#334155;">'
+        + logo
+        + intro
+        + details
+        + '<div style="text-align:center;font-size:12px;border-top:1px solid #eee;padding-top:20px;margin-top:10px;">'
+        '<p style="font-weight:600;">Kind regards,<br>Skyline Car Hire (UK) Ltd</p></div>'
+        "</div>"
+    )
+
+
+def send_plating_passed_email(to: str, subject: str, data: dict, cc: Optional[str] = None) -> dict:
+    html = render_plating_passed(data)
+    registration = (data.get("registration") or "").strip()
+    default_subject = f"{registration} - Plating Appointment Passed" if registration else "Plating Appointment Passed"
+    return send_email(to=to or FLEET_INBOX, subject=subject or default_subject, html=html, cc=cc)
+
+
+def send_mot_passed_email(to: str, subject: str, data: dict, cc: Optional[str] = None) -> dict:
+    html = render_mot_passed(data)
+    registration = (data.get("registration") or "").strip()
+    default_subject = f"{registration} - MOT Passed" if registration else "MOT Passed"
+    return send_email(to=to or FLEET_INBOX, subject=subject or default_subject, html=html, cc=cc)

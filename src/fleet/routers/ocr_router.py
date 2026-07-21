@@ -38,3 +38,31 @@ async def ocr_payment_receipt_route(file: UploadFile = File(...)):
     """OCR a bank transfer receipt into payment fields."""
     text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
     return fleet_ocr.parse_payment_receipt(text)
+
+
+@router.post("/ocr/v5c")
+async def ocr_v5c_route(file: UploadFile = File(...)):
+    """OCR a V5C logbook into vehicle fields."""
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    return fleet_ocr.parse_v5c(text)
+
+
+@router.post("/ocr/plating-certificate")
+async def ocr_plating_certificate_route(file: UploadFile = File(...)):
+    """OCR a plating expiry certificate into authority + plating fields."""
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    return fleet_ocr.parse_plating_certificate(text)
+
+
+@router.post("/ocr/mot-certificate")
+async def ocr_mot_certificate_route(file: UploadFile = File(...)):
+    """OCR an MOT certificate into MOT centre + MOT date fields."""
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    return fleet_ocr.parse_mot_certificate(text)
+
+
+@router.post("/ocr/service-invoice")
+async def ocr_service_invoice_route(file: UploadFile = File(...)):
+    """OCR a garage service invoice into garage + servicing fields."""
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    return fleet_ocr.parse_service_invoice(text)

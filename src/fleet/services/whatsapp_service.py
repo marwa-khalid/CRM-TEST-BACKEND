@@ -15,6 +15,17 @@ Supported values:
 - WHATSAPP_PROVIDER=meta   (WhatsApp Cloud API, direct from Meta)
   WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, optional WHATSAPP_API_VERSION
 
+  Outside the 24-hour window WhatsApp only accepts pre-approved TEMPLATES, so
+  each business-initiated message needs its approved template name in env:
+      WHATSAPP_TEMPLATE_PAYMENT_REMINDER
+      WHATSAPP_TEMPLATE_PRICE_RISE
+      WHATSAPP_TEMPLATE_ON_HIRE
+      WHATSAPP_TEMPLATE_LANG   (default en_GB)
+  With a template configured the approved wording is what sends — any text typed
+  in the modal is ignored, because WhatsApp does not allow it to be changed.
+  Leave a template unset and that message falls back to free-form text, which is
+  what the Vonage sandbox and the 24-hour window allow.
+
 NOTE: outside the 24-hour customer-service window WhatsApp only allows
 pre-approved *template* messages. Free-form text (what we send here) works when
 the customer has messaged you recently or joined the Vonage sandbox; otherwise
@@ -53,7 +64,21 @@ def normalize_uk_mobile(value: Optional[str]) -> str:
     return f"+44{digits}"
 
 
-def _send_meta(to_number: str, body: str) -> dict:
+# Message kind -> the env var holding its approved template name.
+TEMPLATE_ENV = {
+    "reminder": "WHATSAPP_TEMPLATE_PAYMENT_REMINDER",
+    "price_rise": "WHATSAPP_TEMPLATE_PRICE_RISE",
+    "on_hire": "WHATSAPP_TEMPLATE_ON_HIRE",
+}
+
+
+def template_for(kind: Optional[str]) -> str:
+    """Approved template name for this message kind, or "" for free-form text."""
+    env_name = TEMPLATE_ENV.get((kind or "").strip().lower())
+    return os.getenv(env_name, "").strip() if env_name else ""
+
+
+def _send_meta(to_number: str, body: str, template: str = "", params: Optional[list] = None) -> dict:
     token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
     phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
     version = os.getenv("WHATSAPP_API_VERSION", "v21.0").strip() or "v21.0"
@@ -64,15 +89,37 @@ def _send_meta(to_number: str, body: str) -> dict:
             "reason": "WhatsApp Cloud API env vars are missing (WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID)",
         }
 
-    response = requests.post(
-        f"https://graph.facebook.com/{version}/{phone_number_id}/messages",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
+    if template:
+        language = os.getenv("WHATSAPP_TEMPLATE_LANG", "en_GB").strip() or "en_GB"
+        components = []
+        if params:
+            components.append({
+                "type": "body",
+                # Placeholders are positional: {{1}}, {{2}}, ... in template order.
+                "parameters": [{"type": "text", "text": str(p)} for p in params],
+            })
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number.lstrip("+"),
+            "type": "template",
+            "template": {
+                "name": template,
+                "language": {"code": language},
+                **({"components": components} if components else {}),
+            },
+        }
+    else:
+        payload = {
             "messaging_product": "whatsapp",
             "to": to_number.lstrip("+"),
             "type": "text",
             "text": {"preview_url": False, "body": body},
-        },
+        }
+
+    response = requests.post(
+        f"https://graph.facebook.com/{version}/{phone_number_id}/messages",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
         timeout=20,
     )
     if response.status_code >= 400:
@@ -194,8 +241,17 @@ def _send_vonage(to_number: str, body: str) -> dict:
     return {"sent": True, "provider": "vonage", "message_id": payload.get("message_uuid"), "to": to_number}
 
 
-def send_whatsapp(to_number: Optional[str], body: str) -> dict:
-    """Best-effort WhatsApp message. Never raises to the caller."""
+def send_whatsapp(
+    to_number: Optional[str],
+    body: str,
+    kind: Optional[str] = None,
+    params: Optional[list] = None,
+) -> dict:
+    """Best-effort WhatsApp message. Never raises to the caller.
+
+    `kind` selects an approved template when one is configured; otherwise the
+    free-form `body` is sent.
+    """
     normalized = normalize_uk_mobile(to_number)
     if not normalized:
         return {"sent": False, "reason": "Missing or invalid UK mobile number"}
@@ -206,7 +262,7 @@ def send_whatsapp(to_number: Optional[str], body: str) -> dict:
         if provider in {"vonage", "nexmo"}:
             return _send_vonage(normalized, body)
         if provider in {"meta", "cloud", "whatsapp_cloud"}:
-            return _send_meta(normalized, body)
+            return _send_meta(normalized, body, template_for(kind), params)
         return {"sent": False, "provider": provider, "reason": "Unsupported WhatsApp provider"}
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.warning("Fleet WhatsApp send failed via %s: %s", provider, exc)
@@ -214,4 +270,4 @@ def send_whatsapp(to_number: Optional[str], body: str) -> dict:
 
 
 def send_on_hire_whatsapp(driver_mobile: Optional[str]) -> dict:
-    return send_whatsapp(driver_mobile, ON_HIRE_WHATSAPP_BODY)
+    return send_whatsapp(driver_mobile, ON_HIRE_WHATSAPP_BODY, kind="on_hire")

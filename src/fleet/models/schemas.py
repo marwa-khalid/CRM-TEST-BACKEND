@@ -460,3 +460,125 @@ class OnHireEmailRequest(BaseModel):
     make: Optional[str] = None
     model: Optional[str] = None
     hire_start: Optional[str] = None
+
+
+# --------------------------------------------------------------------------- #
+# Vehicle records (Fleet vehicle asset wizard)
+# --------------------------------------------------------------------------- #
+class VehicleRecordUpdate(BaseModel):
+    """Field-level PATCH — every field optional so the client can save one at a time."""
+    obtained_for_purpose: Optional[str] = None
+    contract_type: Optional[str] = None
+    company_owned_or_leased: Optional[bool] = None
+    cross_hired_to_us: Optional[bool] = None
+    registration_number: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    manufacturer: Optional[str] = None
+    variant: Optional[str] = None
+    number_of_doors: Optional[str] = None
+    number_of_seats: Optional[str] = None
+    body_type: Optional[str] = None
+    fuel_type: Optional[str] = None
+    transmission: Optional[str] = None
+    engine_size_cc: Optional[str] = None
+    v5c_document_reference: Optional[str] = None
+    chassis_number: Optional[str] = None
+    date_of_first_registration: Optional[date] = None
+    date_delivered: Optional[date] = None
+    vehicle_status: Optional[str] = None
+    depot_branch: Optional[str] = None
+    road_tax_renewed_on: Optional[date] = None
+    purchaser_name: Optional[str] = None
+    purchaser_address: Optional[str] = None
+    purchaser_postcode: Optional[str] = None
+    purchaser_telephone: Optional[str] = None
+    purchaser_email: Optional[str] = None
+    vehicle_sold_on: Optional[date] = None
+    sold_for_inc_vat: Optional[str] = None
+    sold_for_exc_vat: Optional[str] = None
+
+
+class VehicleRecordResponse(VehicleRecordUpdate):
+    id: int
+    # Calculated server-side as one year after road_tax_renewed_on (read-only).
+    road_tax_expiry_date: Optional[date] = None
+    # Section C — read-only, pulled from the Skyline (client-side) hire screens.
+    latest_mileage_obtained: Optional[str] = None
+    mileage_obtained_on: Optional[date] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LicensingAuthorityUpdate(BaseModel):
+    """Field-level PATCH for one licensing authority."""
+    licensing_authority: Optional[str] = None
+    address: Optional[str] = None
+    postcode: Optional[str] = None
+    telephone: Optional[str] = None
+    contact_number: Optional[str] = None
+    email_address: Optional[str] = None
+    plate_number: Optional[str] = None
+    plating_start_date: Optional[date] = None
+    plating_expiry_date: Optional[date] = None
+    plating_booked_date: Optional[date] = None
+    plating_booked_time: Optional[str] = None
+    plating_attended_passed: Optional[bool] = None
+    mot_centre_name: Optional[str] = None
+    mot_address: Optional[str] = None
+    mot_postcode: Optional[str] = None
+    mot_telephone: Optional[str] = None
+    mot_email_address: Optional[str] = None
+    last_mot_date: Optional[date] = None
+    mot_expiry_date: Optional[date] = None
+    mot_booked_date: Optional[date] = None
+    mot_booked_time: Optional[str] = None
+    mot_attended_passed: Optional[bool] = None
+
+
+class LicensingAuthorityResponse(LicensingAuthorityUpdate):
+    id: int
+    vehicle_record_id: int
+    position: Optional[int] = None
+    plating_certificate_name: Optional[str] = None
+    plating_certificate_url: Optional[str] = None
+    mot_certificate_name: Optional[str] = None
+    mot_certificate_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleServiceUpdate(BaseModel):
+    """Field-level PATCH for one servicing record."""
+    garage_name: Optional[str] = None
+    address: Optional[str] = None
+    postcode: Optional[str] = None
+    contact_number: Optional[str] = None
+    email: Optional[str] = None
+    service_booked_date: Optional[date] = None
+    service_booked_time: Optional[str] = None
+    serviced_at_mileage: Optional[str] = None
+    serviced_on: Optional[date] = None
+    next_service_due_at: Optional[str] = None
+    case_reference: Optional[str] = None
+
+
+class VehicleServiceResponse(VehicleServiceUpdate):
+    id: int
+    vehicle_record_id: int
+    position: Optional[int] = None
+    invoice_name: Optional[str] = None
+    invoice_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AppointmentPassedEmailRequest(BaseModel):
+    """Plating / MOT "appointment passed" confirmation. Everything else is read
+    from the licensing authority record so the email can't drift from the data."""
+    to: Optional[str] = None
+    cc: Optional[str] = None
+    subject: Optional[str] = None
