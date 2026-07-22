@@ -517,9 +517,14 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
             if _NOT_A_NAME.search(line):
                 continue
             words = re.findall(r"[A-Za-z][A-Za-z'\-]+", line)
-            if 2 <= len(words) <= 3 and all(len(w) >= 2 for w in words):
-                result["name"] = _name_words(" ".join(words))
-                break
+            # A real name has 2-3 words, each with a vowel. The vowel test rejects
+            # OCR junk from a security background ("Coun Hls Ie" — "Hls" has none).
+            if not (2 <= len(words) <= 3 and all(len(w) >= 2 for w in words)):
+                continue
+            if not all(re.search(r"[aeiouAEIOU]", w) for w in words):
+                continue
+            result["name"] = _name_words(" ".join(words))
+            break
 
     # Expiry: prefer the labelled date, else the latest future-looking date.
     match = _BADGE_EXPIRY.search(flat)
@@ -532,14 +537,27 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
         if future:
             result["expiry"] = max(future).strftime("%d-%m-%Y")
 
-    # Issuing council — the line mentioning "council", joined with the line above
-    # when the authority name wraps (e.g. "City of" / "Wolverhampton Council").
+    # Issuing council — the line mentioning "council", joined with the lines
+    # above when the authority name wraps. Badges split it across two or three
+    # lines: "Wolverhampton" / "Council", or "CITY OF" / "WOLVERHAMPTON" /
+    # "COUNCIL", so walk back over every fragment, not just one line.
+    _badge_noise = re.compile(r"licen|name|expir|driver|number|hire|tap|phone|verify", re.I)
     for i, line in enumerate(lines):
         if "council" in line.lower():
-            parts = [line]
-            prev = lines[i - 1] if i > 0 else ""
-            if prev and len(prev) <= 40 and not re.search(r"licen|name|expir|driver|number|hire", prev, re.I):
+            parts = [line.strip()]
+            j = i - 1
+            while j >= 0:
+                prev = lines[j].strip()
+                words = prev.split()
+                # A council name wraps into clean fragments: a place ("Wolverhampton")
+                # or a prefix ("City of"). Stop at blanks, labels, digits, or OCR
+                # junk — every word must have a vowel and be a real word length.
+                if (not prev or len(words) > 2 or _badge_noise.search(prev)
+                        or any(ch.isdigit() for ch in prev)
+                        or not all(re.fullmatch(r"[A-Za-z][A-Za-z'\-]{1,}", w) and re.search(r"[aeiouAEIOU]", w) for w in words)):
+                    break
                 parts.insert(0, prev)
+                j -= 1
             council = re.sub(r"\s+", " ", " ".join(parts)).strip(" .:-")
             result["council"] = council
             break

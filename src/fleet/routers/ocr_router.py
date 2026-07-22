@@ -20,10 +20,18 @@ async def ocr_proof_of_address_route(file: UploadFile = File(...)):
 
 
 @router.post("/ocr/taxi-badge")
-async def ocr_taxi_badge_route(file: UploadFile = File(...)):
-    """OCR a UK taxi (private-hire / hackney) driver badge into badge fields."""
+async def ocr_taxi_badge_route(file: UploadFile = File(...), debug: bool = False):
+    """OCR a UK taxi (private-hire / hackney) driver badge into badge fields.
+
+    Pass ?debug=true to also return the raw OCR text — badges are photographed
+    laminated cards, often with a security hologram over the name, so the raw
+    read is the only reliable way to see why a field extracted wrongly.
+    """
     text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
-    return fleet_ocr.parse_taxi_badge(text)
+    result = fleet_ocr.parse_taxi_badge(text)
+    if debug:
+        result["_raw_text"] = text
+    return result
 
 
 @router.post("/ocr/insurance-certificate")
