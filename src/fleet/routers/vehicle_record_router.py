@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from fleet.deps import actor_id, get_session, get_tenant_id
+from fleet.deps import actor_id, authenticate, get_session, get_tenant_id
 from fleet.models.schemas import (
+    AppointmentEmailPreviewResponse,
     AppointmentPassedEmailRequest,
     LicensingAuthorityResponse,
     LicensingAuthorityUpdate,
@@ -259,6 +260,73 @@ def _uk_date(value) -> str:
     return value.strftime("%d/%m/%Y") if value else ""
 
 
+def _appointment_email_data(record, authority, kind: str) -> dict:
+    """The record-derived fields the branded template renders from."""
+    registration = (record.registration_number or "").strip()
+    if kind == "plating":
+        return {
+            "registration": registration,
+            "licensing_authority": authority.licensing_authority,
+            "plate_number": authority.plate_number,
+            "plating_start": _uk_date(authority.plating_start_date),
+            "plating_expiry": _uk_date(authority.plating_expiry_date),
+        }
+    return {
+        "registration": registration,
+        "mot_centre_name": authority.mot_centre_name,
+        "last_mot": _uk_date(authority.last_mot_date),
+        "mot_expiry": _uk_date(authority.mot_expiry_date),
+    }
+
+
+def _appointment_email_content(record, authority, kind: str) -> tuple:
+    """(subject, editable message body) for the plating/MOT confirmation."""
+    registration = (record.registration_number or "").strip()
+    data = _appointment_email_data(record, authority, kind)
+    if kind == "plating":
+        return (
+            fleet_email_service.plating_passed_subject(registration),
+            fleet_email_service.plating_passed_text(data),
+        )
+    return (
+        fleet_email_service.mot_passed_subject(registration),
+        fleet_email_service.mot_passed_text(data),
+    )
+
+
+def _render_appointment_html(record, authority, kind: str, body: str = "") -> str:
+    """The email exactly as it sends: the (edited) body rendered into the branded
+    design template — logo, boxed label/value rows, Skyline footer."""
+    if not body:
+        _subject, body = _appointment_email_content(record, authority, kind)
+    heading = "Plating Details" if kind == "plating" else "MOT Details"
+    return fleet_email_service.render_fleet_notice(body, heading=heading)
+
+
+@router.get(
+    "/vehicle-record/{record_id}/licensing-authority/{authority_id}/email/{kind}/preview",
+    response_model=AppointmentEmailPreviewResponse,
+)
+def preview_appointment_passed_email_route(
+    record_id: int,
+    authority_id: int,
+    kind: str,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+    user: dict = Depends(authenticate),
+):
+    """Default recipient (the logged-in user), subject and editable body."""
+    if kind not in {"plating", "mot"}:
+        raise HTTPException(status_code=400, detail="Unknown confirmation type.")
+    record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    authority = licensing_authority_service.get_authority_or_404(db, record_id, authority_id)
+    subject, body = _appointment_email_content(record, authority, kind)
+    html = _render_appointment_html(record, authority, kind)
+    # For now every Fleet email defaults to the logged-in user; they can change it.
+    to = (user or {}).get("user_name") or fleet_email_service.FLEET_INBOX
+    return AppointmentEmailPreviewResponse(to=to, subject=subject, body=body, html=html)
+
+
 @router.post("/vehicle-record/{record_id}/licensing-authority/{authority_id}/email/{kind}")
 def send_appointment_passed_email_route(
     record_id: int,
@@ -267,43 +335,26 @@ def send_appointment_passed_email_route(
     payload: AppointmentPassedEmailRequest,
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
+    user: dict = Depends(authenticate),
 ):
-    """kind = plating | mot. Sends the appointment-passed confirmation."""
+    """kind = plating | mot. Sends the (edited) appointment-passed confirmation."""
     if kind not in {"plating", "mot"}:
         raise HTTPException(status_code=400, detail="Unknown confirmation type.")
 
     record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
     authority = licensing_authority_service.get_authority_or_404(db, record_id, authority_id)
-    registration = (record.registration_number or "").strip()
+    default_subject, default_body = _appointment_email_content(record, authority, kind)
 
-    if kind == "plating":
-        data = {
-            "registration": registration,
-            "licensing_authority": authority.licensing_authority,
-            "plate_number": authority.plate_number,
-            "plating_start": _uk_date(authority.plating_start_date),
-            "plating_expiry": _uk_date(authority.plating_expiry_date),
-        }
-        result = fleet_email_service.send_plating_passed_email(
-            to=payload.to or fleet_email_service.FLEET_INBOX,
-            subject=payload.subject or "",
-            data=data,
-            cc=payload.cc,
-        )
-    else:
-        data = {
-            "registration": registration,
-            "mot_centre_name": authority.mot_centre_name,
-            "last_mot": _uk_date(authority.last_mot_date),
-            "mot_expiry": _uk_date(authority.mot_expiry_date),
-        }
-        result = fleet_email_service.send_mot_passed_email(
-            to=payload.to or fleet_email_service.FLEET_INBOX,
-            subject=payload.subject or "",
-            data=data,
-            cc=payload.cc,
-        )
+    # Recipient defaults to the logged-in user for now; the user may edit it.
+    to = (payload.to or "").strip() or (user or {}).get("user_name") or fleet_email_service.FLEET_INBOX
+    subject = (payload.subject or "").strip() or default_subject
+    # The edited body becomes the intro MESSAGE; the branded boxed details always
+    # render from the record, so the sent email stays on-template.
+    message = payload.body if payload.body is not None else default_body
+    html = _render_appointment_html(record, authority, kind, message)
+
+    result = fleet_email_service.send_email(to=to, subject=subject, html=html, cc=payload.cc)
 
     if isinstance(result, dict) and result.get("status") == "failed":
         raise HTTPException(status_code=502, detail=result.get("detail") or "Email could not be sent.")
-    return {"status": "sent", "to": payload.to or fleet_email_service.FLEET_INBOX}
+    return {"status": "sent", "to": to}

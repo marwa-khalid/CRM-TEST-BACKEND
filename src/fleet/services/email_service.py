@@ -264,15 +264,18 @@ def send_pay_hirer_email(to: str, subject: str, data: dict, cc: Optional[str] = 
 # --------------------------------------------------------------------------- #
 # Both go to the Fleet inbox rather than the hirer — they are internal records
 # that an appointment was attended and passed.
-FLEET_INBOX = "Fleet@nationwideassist.co.uk"
+FLEET_INBOX = "marwanationwideassist@outlook.com"
 
 
 def render_plating_passed(data: dict, include_logo: bool = True) -> str:
     g = lambda k: (data.get(k) or "")  # noqa: E731
     registration = g("registration") or "The vehicle"
 
+    # The intro is the message the user reviewed/edited in the preview; the boxed
+    # details below always come from the record, so the email stays on-template.
+    message = g("message").strip() or f"{registration} has attended and passed the plating appointment."
     intro = _centered_text(
-        f'<p style="margin:0;">{escape(registration)} has attended and passed the plating appointment.</p>'
+        f'<p style="margin:0;white-space:pre-wrap;">{escape(message)}</p>'
     )
     details = _box(
         _heading("Plating Details")
@@ -302,10 +305,11 @@ def render_mot_passed(data: dict, include_logo: bool = True) -> str:
     last_mot = g("last_mot")
     # "…passed the MOT appointment on 05/01/2023." — only when we know the date,
     # otherwise the sentence trails off mid-clause as it does in the sample.
-    when = f" on {escape(last_mot)}" if last_mot else ""
-
+    when = f" on {last_mot}" if last_mot else ""
+    # The intro is the message the user reviewed/edited in the preview.
+    message = g("message").strip() or f"{registration} has attended and passed the MOT appointment{when}."
     intro = _centered_text(
-        f'<p style="margin:0;">{escape(registration)} has attended and passed the MOT appointment{when}.</p>'
+        f'<p style="margin:0;white-space:pre-wrap;">{escape(message)}</p>'
     )
     details = _box(
         _heading("MOT Details")
@@ -340,3 +344,88 @@ def send_mot_passed_email(to: str, subject: str, data: dict, cc: Optional[str] =
     registration = (data.get("registration") or "").strip()
     default_subject = f"{registration} - MOT Passed" if registration else "MOT Passed"
     return send_email(to=to or FLEET_INBOX, subject=subject or default_subject, html=html, cc=cc)
+
+
+# --------------------------------------------------------------------------- #
+# Plating / MOT "appointment passed" — editable text + subject for the preview.
+# The user reviews and edits this before it sends; on send it is wrapped in the
+# standard branded template (send_hire_email), same as other editable emails.
+# --------------------------------------------------------------------------- #
+def plating_passed_subject(registration: str) -> str:
+    registration = (registration or "").strip()
+    return f"{registration} - Plating Appointment Passed" if registration else "Plating Appointment Passed"
+
+
+def mot_passed_subject(registration: str) -> str:
+    registration = (registration or "").strip()
+    return f"{registration} - MOT Passed" if registration else "MOT Passed"
+
+
+# The editable body is the FULL content (message + "Label: value" detail lines).
+# The user edits everything as plain text in the preview; on send it is rendered
+# INTO the branded design template (render_fleet_notice) — so the preview is
+# editable and the sent email is always on-template.
+def plating_passed_text(data: dict) -> str:
+    g = lambda k: (data.get(k) or "").strip()  # noqa: E731
+    reg = g("registration") or "The vehicle"
+    return "\n".join([
+        f"{reg} has attended and passed the plating appointment.",
+        "",
+        f"Licensing Authority: {g('licensing_authority')}",
+        f"Plate Number: {g('plate_number')}",
+        f"Plating Start: {g('plating_start')}",
+        f"Plating Expiry: {g('plating_expiry')}",
+    ])
+
+
+def mot_passed_text(data: dict) -> str:
+    g = lambda k: (data.get(k) or "").strip()  # noqa: E731
+    reg = g("registration") or "The vehicle"
+    last = g("last_mot")
+    opener = (
+        f"{reg} has attended and passed the MOT appointment on {last}."
+        if last else f"{reg} has attended and passed the MOT appointment."
+    )
+    return "\n".join([
+        opener,
+        "",
+        f"MOT Centre Name: {g('mot_centre_name')}",
+        f"Last MOT: {last}",
+        f"MOT Expiry: {g('mot_expiry')}",
+    ])
+
+
+def render_fleet_notice(body: str, heading: str = "", include_logo: bool = True) -> str:
+    """Render the (edited) plain-text body into the branded design template.
+
+    Plain paragraphs become the centred intro; "Label: value" lines become the
+    boxed label/value rows under `heading` — the same visual language as the other
+    Fleet emails, so what the user typed comes out on-template.
+    """
+    intro_parts: List[str] = []
+    rows: List[str] = []
+    for raw in (body or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        label, sep, value = line.partition(":")
+        if sep and 0 < len(label.strip()) <= 30:
+            rows.append(_row(label.strip(), value.strip()))
+        else:
+            intro_parts.append(escape(line))
+
+    intro = _centered_text("<p style='margin:0;'>" + "<br>".join(intro_parts) + "</p>") if intro_parts else ""
+    details = ""
+    if rows:
+        details = _box((_heading(heading) if heading else "") + _divider().join(rows))
+
+    logo = ('<div style="text-align:center;">' + _LOGO_IMG + "</div>") if include_logo else ""
+    return (
+        '<div style="font-family:Arial,sans-serif;background:#ffffff;padding:20px;color:#334155;">'
+        + logo
+        + intro
+        + details
+        + '<div style="text-align:center;font-size:12px;border-top:1px solid #eee;padding-top:20px;margin-top:10px;">'
+        '<p style="font-weight:600;">Kind regards,<br>Skyline Car Hire (UK) Ltd</p></div>'
+        "</div>"
+    )

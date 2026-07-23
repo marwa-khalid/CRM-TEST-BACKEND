@@ -577,8 +577,18 @@ class VehicleServiceResponse(VehicleServiceUpdate):
 
 
 class AppointmentPassedEmailRequest(BaseModel):
-    """Plating / MOT "appointment passed" confirmation. Everything else is read
-    from the licensing authority record so the email can't drift from the data."""
+    """Plating / MOT "appointment passed" confirmation. `to`/`subject`/`body` are
+    the values the user reviewed and edited in the preview; when omitted they fall
+    back to the logged-in user and the text built from the record."""
     to: Optional[str] = None
     cc: Optional[str] = None
     subject: Optional[str] = None
+    body: Optional[str] = None
+
+
+class AppointmentEmailPreviewResponse(BaseModel):
+    to: str
+    subject: str
+    body: str
+    # Rendered branded template, shown as the visual preview.
+    html: str
