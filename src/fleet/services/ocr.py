@@ -550,12 +550,29 @@ _BADGE_EXPIRY = re.compile(
 )
 # Lines that are badge chrome/labels rather than the holder's name.
 _NOT_A_NAME = re.compile(
-    r"council|licen|number|expir|driver|hire|hackney|badge|system|patent|verify|"
+    r"council|licen|number|\bname\b|expir|driver|hire|hackney|badge|system|patent|verify|"
     r"tap|phone|metropolitan|borough|city|private|genuine|date|urbs|rure|"
     r"district|passenger|plate|registration|vehicle|carry|counci|cotswold|cot\s*swold|"
     r"solihull|wolver\s*hampt|wolverhampton",
     re.I,
 )
+
+
+def _valid_badge_name(name: str) -> bool:
+    """A real holder name — not badge chrome and not OCR noise like "Oe". Rejects
+    single short tokens and vowel-less junk so a blank is returned instead."""
+    if not name or _NOT_A_NAME.search(name):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]+", name)
+    if not words:
+        return False
+    if not all(len(w) >= 2 for w in words):
+        return False
+    if not any(len(w) >= 3 for w in words):  # "Oe" has no ≥3-letter word
+        return False
+    if not all(re.search(r"[aeiouAEIOU]", w) for w in words):
+        return False
+    return True
 
 
 def _badge_name_candidate(line: str) -> str:
@@ -598,9 +615,17 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
         if match:
             result["badgeNumber"] = re.sub(r"\s+", "", match.group(1))
     if not result["badgeNumber"]:
-        match = re.search(r"\b(25[10]05927)\b", flat)
+        # The "/" in a Solihull-style number (25/05927) frequently OCRs as 1, l, I,
+        # |, \ or a single space — accept "NN<sep>NNNNN" and normalise the slash.
+        match = re.search(r"\b(\d{2})[/1lI|\\!\s](\d{5})\b", flat)
         if match:
-            result["badgeNumber"] = "25/05927"
+            result["badgeNumber"] = f"{match.group(1)}/{match.group(2)}"
+    if not result["badgeNumber"]:
+        # Slash dropped entirely — a 7-digit run right after "LICENCE NUMBER"
+        # (anchored to that label so it can't grab the patent/phone numbers).
+        match = re.search(r"licen[cs]e\s*numb\w*\D{0,12}(\d{2})(\d{5})\b", flat, re.I)
+        if match:
+            result["badgeNumber"] = f"{match.group(1)}/{match.group(2)}"
     if not result["badgeNumber"]:
         # Vehicle-style private-hire plates often print the plate/badge number as
         # a large standalone value after "PRIVATE HIRE", with no "licence no"
@@ -610,6 +635,15 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
             candidate = match.group(1).strip()
             if candidate not in {"8", "5", "4"}:
                 result["badgeNumber"] = candidate
+
+    # Solihull prints the number as NN/NNNNN. OCR often loses the slash (7 digits)
+    # or reads it as a digit (8 digits) — restore the canonical slashed form.
+    bn = result["badgeNumber"]
+    if bn and bn.isdigit() and re.search(r"solihull", flat, re.I):
+        if len(bn) == 7:
+            result["badgeNumber"] = f"{bn[:2]}/{bn[2:]}"
+        elif len(bn) == 8:
+            result["badgeNumber"] = f"{bn[:2]}/{bn[3:]}"
 
     # Name — matched per LINE so it can't run on into the next field ("EXPIRY DATE"),
     # and falling back to a standalone name-looking line for badges with no label
@@ -625,7 +659,7 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
         if result["name"]:
             break
         match = _BADGE_NAME.search(line)
-        if match:
+        if match and _valid_badge_name(match.group(1)):
             result["name"] = _name_words(match.group(1))
             break
         if re.match(r"^\s*name\s*[:\.\-]*\s*$", line, re.I):

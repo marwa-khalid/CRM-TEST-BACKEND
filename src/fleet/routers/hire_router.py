@@ -6,8 +6,19 @@ from sqlalchemy.orm import Session
 from fleet.deps import actor_id, get_session, get_tenant_id
 from fleet.models.schemas import HireAuditResponse, HireCompletionSummary, HireResponse, HireUpdate
 from fleet.services import hire_service
+from fleet.services import reminder_watcher
 
 router = APIRouter()
+
+
+@router.get("/reminders/due")
+def list_due_reminders_route(
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Read-only list of currently-due fleet expiry reminders (road tax / plate /
+    MOT). Does not fire or send anything — used to surface reminders in the UI."""
+    return reminder_watcher.list_due_reminders(db)
 
 
 @router.post("/hire", response_model=HireResponse)

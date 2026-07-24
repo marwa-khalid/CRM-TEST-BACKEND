@@ -61,6 +61,8 @@ def list_hires(db: Session, tenant_id: Optional[int]):
     hire_ids = [h.id for h in hires]
     last_status: dict[int, Optional[str]] = {}
     last_reg: dict[int, Optional[str]] = {}
+    last_start: dict[int, Optional[object]] = {}
+    last_end: dict[int, Optional[object]] = {}
     if hire_ids:
         vehicles = (
             db.query(FleetHireVehicle)
@@ -72,9 +74,13 @@ def list_hires(db: Session, tenant_id: Optional[int]):
         for v in vehicles:
             last_status[v.hire_id] = v.hire_status
             last_reg[v.hire_id] = v.registration_number
+            last_start[v.hire_id] = v.hire_start_date
+            last_end[v.hire_id] = v.hire_end_date
     for hire in hires:
         hire.last_vehicle_hire_status = last_status.get(hire.id)
         hire.last_vehicle_registration = last_reg.get(hire.id)
+        hire.last_vehicle_hire_start = last_start.get(hire.id)
+        hire.last_vehicle_hire_end = last_end.get(hire.id)
     return hires
 
 

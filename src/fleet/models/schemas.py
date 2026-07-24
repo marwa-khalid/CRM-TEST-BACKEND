@@ -195,6 +195,8 @@ class HireResponse(BaseModel):
     # screen — drives the On/Off Hire listing widgets and the listing's Vehicle Reg column.
     last_vehicle_hire_status: Optional[str] = None
     last_vehicle_registration: Optional[str] = None
+    last_vehicle_hire_start: Optional[date] = None
+    last_vehicle_hire_end: Optional[date] = None
 
     class Config:
         from_attributes = True
