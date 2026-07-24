@@ -220,11 +220,16 @@ def build_letters_download(
     if not active_authorities:
         raise HTTPException(status_code=400, detail="Add a licensing authority before raising letters.")
 
-    hire, vehicle = _linked_hire_and_vehicle(db, record)
+    # The client on the letter is the hire's driver.
+    client_name = ""
+    if getattr(record, "hire_id", None):
+        hire = db.query(FleetHire).filter(FleetHire.id == record.hire_id).first()
+        client_name = (getattr(hire, "driver_name", "") or "").strip() if hire else ""
+
     files = [
         (
             _authority_filename(authority),
-            generated_document_service.render_raise_authority_letter_docx(hire, vehicle, db),
+            generated_document_service.render_licensing_summary_letter_docx(record, authority, client_name),
         )
         for authority in active_authorities
     ]

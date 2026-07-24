@@ -63,6 +63,13 @@ DOCUMENT_GROUPS: Dict[str, List[GeneratedDocumentAsset]] = {
             source_filename="Raise Authority Letter.docx",
         ),
     ],
+    "raise_licensing_authority_summary_letter": [
+        GeneratedDocumentAsset(
+            key="raise_licensing_authority_summary_letter_docx",
+            filename="Raise Licensing Authority Summary Letter.docx",
+            source_filename="RaiseLicensingAuthoritySummaryLetter.docx",
+        ),
+    ],
     "raise_vehicle_inspection_sheet": [
         GeneratedDocumentAsset(
             key="raise_vehicle_inspection_sheet_xlsx",
@@ -527,6 +534,58 @@ def render_raise_authority_letter_docx(hire, vehicle: Optional[FleetHireVehicle]
     """Render the manager-provided Raise Authority Letter template as a DOCX."""
     asset = DOCUMENT_GROUPS["raise_authority_letter"][0]
     return _render_asset(asset, _document_context(hire, vehicle, db))
+
+
+def render_licensing_summary_letter_docx(record, authority, client_name: str = "") -> bytes:
+    """Render the customer-side "Raise Licensing Authority Summary Letter" for one
+    authority — fills the client (driver) name, council address, the licensing
+    authority name, the vehicle (reg + make/model) and the date into the template."""
+    from docx import Document
+
+    asset = DOCUMENT_GROUPS["raise_licensing_authority_summary_letter"][0]
+    client_name = (client_name or "").strip()
+    authority_name = (getattr(authority, "licensing_authority", "") or "").strip()
+    address = ", ".join(
+        p.strip() for p in [getattr(authority, "address", "") or "", getattr(authority, "postcode", "") or ""] if p.strip()
+    )
+    reg = (getattr(record, "registration_number", "") or "").strip()
+    make_model = " ".join(
+        p.strip() for p in [getattr(record, "make", "") or "", getattr(record, "model", "") or ""] if p.strip()
+    )
+    vehicle_line = ", ".join(p for p in [reg, make_model] if p)
+    today = date.today().strftime("%d/%m/%Y")
+
+    doc = Document(asset.path)
+    for paragraph in doc.paragraphs:
+        original = paragraph.text
+        if not original.strip():
+            continue
+        updated = original
+        if client_name:
+            # "I, [Client Name] wish to provide…" and the standalone sign-off line.
+            updated = updated.replace("[Client Name]", client_name)
+            if original.strip() == "Client Name":
+                updated = client_name
+        if authority_name:
+            # The template writes "(ENTER LICENSING AUTHORITY) Council" — collapse
+            # the trailing "Council" when the entered name already ends in it.
+            if authority_name.lower().endswith("council"):
+                updated = updated.replace("(ENTER LICENSING AUTHORITY) Council", authority_name)
+            updated = updated.replace("(ENTER LICENSING AUTHORITY)", authority_name)
+        if address:
+            updated = updated.replace("(ENTER Council Address)", address)
+        if vehicle_line:
+            updated = updated.replace("[LP73TXS, AUDI A6 SPORT 40 TDI]", vehicle_line)
+        # The Word DATE field flattens to static text — replace the whole line
+        # with today's date so the field code doesn't show through.
+        if "DATE" in original and "\\@" in original:
+            updated = today
+        if updated != original:
+            _set_paragraph_text(paragraph, updated)
+
+    output = BytesIO()
+    doc.save(output)
+    return output.getvalue()
 
 
 def _existing_xls_style_idx(ws, row: int, col: int):

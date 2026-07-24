@@ -19,25 +19,38 @@ def _normalise_reg(value: Optional[str]) -> str:
 def _attach_mileage(db: Session, record: FleetVehicleRecord) -> FleetVehicleRecord:
     """Hang the latest client-side mileage off the record for the response model.
 
-    Matching is done on a normalised registration because the two screens accept
-    different spacing ("AB12 CDE" vs "AB12CDE").
+    The customer side is the same hire as the client side, so match on the
+    record's own hire first (reliable even before the customer-side Vehicle
+    Details registration is filled from the V5C). Only fall back to matching by
+    normalised registration when the record isn't linked to a hire.
     """
     record.latest_mileage_obtained = None
     record.mileage_obtained_on = None
 
-    reg = _normalise_reg(record.registration_number)
-    if not reg:
-        return record
+    candidates = []
+    if record.hire_id:
+        # The hire's own vehicles, latest (most recently added) first.
+        candidates = (
+            db.query(FleetHireVehicle)
+            .filter(FleetHireVehicle.hire_id == record.hire_id)
+            .order_by(FleetHireVehicle.position.desc(), FleetHireVehicle.id.desc())
+            .all()
+        )
+    if not candidates:
+        reg = _normalise_reg(record.registration_number)
+        if not reg:
+            return record
+        candidates = [
+            v for v in (
+                db.query(FleetHireVehicle)
+                .filter(FleetHireVehicle.registration_number.isnot(None))
+                .order_by(FleetHireVehicle.id.desc())
+                .all()
+            )
+            if _normalise_reg(v.registration_number) == reg
+        ]
 
-    candidates = (
-        db.query(FleetHireVehicle)
-        .filter(FleetHireVehicle.registration_number.isnot(None))
-        .order_by(FleetHireVehicle.id.desc())
-        .all()
-    )
     for vehicle in candidates:
-        if _normalise_reg(vehicle.registration_number) != reg:
-            continue
         # mileage_end is set at check-out (off hire); mileage_start at check-in.
         # The later of the two is the most recent reading we hold.
         mileage = (vehicle.mileage_end or "").strip() or (vehicle.mileage_start or "").strip()
