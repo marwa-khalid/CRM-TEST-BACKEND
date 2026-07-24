@@ -15,7 +15,7 @@ async def ocr_driving_licence_route(file: UploadFile = File(...)):
 @router.post("/ocr/proof-of-address")
 async def ocr_proof_of_address_route(file: UploadFile = File(...)):
     """OCR a proof-of-address image/PDF into address fields."""
-    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    text = fleet_ocr.taxi_badge_file_to_text(await file.read(), file.filename or "")
     return fleet_ocr.parse_proof_of_address(text)
 
 

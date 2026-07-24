@@ -20,15 +20,14 @@ def _surname_from(name: Optional[str]) -> str:
 
 
 def _reference_for(hire: FleetHire) -> str:
-    # `SK-{SURNAME}-{id}` (Skyline). The date part is dropped so Fleet references
-    # never collide with the Claims format. Until the driver's surname is known
-    # (Screen 2) it's just `SK-{id}`; it fills in live once the surname is saved.
-    surname = _surname_from(hire.driver_name).upper()
-    return f"SK-{surname}-{hire.id}" if surname else f"SK-{hire.id}"
+    # `SK-HR-{id}` (Skyline Hire), id zero-padded to at least 4 digits
+    # (SK-HR-0017). Stable from creation — no name/surname — so the reference
+    # never changes and doesn't collide with the Claims format.
+    return f"SK-HR-{hire.id:04d}"
 
 
 def _ensure_reference(hire: FleetHire) -> bool:
-    """Keep the reference in sync with the current surname (empty until Screen 2)."""
+    """Set the reference once. It's fixed (id-based), so it never needs updating."""
     new_ref = _reference_for(hire)
     if hire.fleet_reference == new_ref:
         return False

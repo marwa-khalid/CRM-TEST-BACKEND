@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from fleet.deps import S3Service
 from fleet.models.tables import FleetVehicleService
+from fleet.services import vehicle_document_service
 from fleet.services.ocr import SERVICE_INTERVAL_MILES
 
 
@@ -93,5 +94,12 @@ def upload_invoice(
     record.invoice_key = result.get("s3_key")
     record.invoice_url = result.get("file_url")
     db.commit()
+    # Keep a per-service-card document history so every uploaded invoice stays
+    # viewable (latest + "Show all"), and replacing one adds rather than overwrites.
+    vehicle_document_service.add_stored_document(
+        db, vehicle_record_id, doc_type="service_invoice", service_id=service_id,
+        filename=getattr(file, "filename", None), s3_key=result.get("s3_key"),
+        file_url=result.get("file_url"), storage_backend=result.get("storage_backend"),
+    )
     db.refresh(record)
     return record

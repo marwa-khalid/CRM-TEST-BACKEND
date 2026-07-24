@@ -592,3 +592,17 @@ class AppointmentEmailPreviewResponse(BaseModel):
     body: str
     # Rendered branded template, shown as the visual preview.
     html: str
+
+
+class VehicleDocumentResponse(BaseModel):
+    id: int
+    vehicle_record_id: int
+    doc_type: Optional[str] = None
+    authority_id: Optional[int] = None
+    service_id: Optional[int] = None
+    filename: Optional[str] = None
+    file_url: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

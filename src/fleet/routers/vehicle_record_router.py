@@ -1,7 +1,7 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from fleet.deps import actor_id, authenticate, get_session, get_tenant_id
@@ -12,6 +12,7 @@ from fleet.models.schemas import (
     LicensingAuthorityUpdate,
     VehicleRecordResponse,
     VehicleRecordUpdate,
+    VehicleDocumentResponse,
     VehicleServiceResponse,
     VehicleServiceUpdate,
 )
@@ -19,6 +20,7 @@ from fleet.services import email_service as fleet_email_service
 from fleet.services import (
     licensing_authority_service,
     vehicle_record_service,
+    vehicle_document_service,
     vehicle_sale_service,
     vehicle_service_record_service,
 )
@@ -182,6 +184,23 @@ def licensing_letters_print_view_route(
     return HTMLResponse(licensing_authority_service.build_letters_html(db, record, authorities))
 
 
+@router.get("/vehicle-record/{record_id}/licensing-letters/download")
+def licensing_letters_download_route(
+    record_id: int,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Download one DOCX per licensing authority, zipped when more than one exists."""
+    record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    authorities = licensing_authority_service.list_authorities(db, record_id)
+    data, content_type, filename = licensing_authority_service.build_letters_download(db, record, authorities)
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Servicing records — one per uploaded Service Invoice (the Service Summary Log)
 # --------------------------------------------------------------------------- #
@@ -254,6 +273,22 @@ def sale_documents_print_view_route(
     """Release of Liability + Sale Receipt — preview, print, or print-to-PDF."""
     record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
     return HTMLResponse(vehicle_sale_service.build_sale_documents_html(record))
+
+
+@router.get("/vehicle-record/{record_id}/sale-documents/download")
+def sale_documents_download_route(
+    record_id: int,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Download Release of Liability + Sale Receipt directly."""
+    record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    html = vehicle_sale_service.build_sale_documents_html(record, show_print_button=False)
+    return Response(
+        content=html.encode("utf-8"),
+        media_type="application/msword",
+        headers={"Content-Disposition": 'attachment; filename="Release of Liability and Receipt.doc"'},
+    )
 
 
 def _uk_date(value) -> str:
@@ -358,3 +393,46 @@ def send_appointment_passed_email_route(
     if isinstance(result, dict) and result.get("status") == "failed":
         raise HTTPException(status_code=502, detail=result.get("detail") or "Email could not be sent.")
     return {"status": "sent", "to": to}
+
+
+# --------------------------------------------------------------------------- #
+# Vehicle documents — uploaded files (V5C), kept as history
+# --------------------------------------------------------------------------- #
+@router.get("/vehicle-record/{record_id}/documents", response_model=List[VehicleDocumentResponse])
+def list_vehicle_documents_route(
+    record_id: int,
+    doc_type: str = "",
+    authority_id: int = 0,
+    service_id: int = 0,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    return vehicle_document_service.list_documents(
+        db, record_id, doc_type or None, authority_id or None, service_id or None
+    )
+
+
+@router.post("/vehicle-record/{record_id}/documents", response_model=VehicleDocumentResponse)
+def upload_vehicle_document_route(
+    record_id: int,
+    file: UploadFile = File(...),
+    doc_type: str = "v5c",
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+    actor: int = Depends(actor_id),
+):
+    vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    return vehicle_document_service.add_document(db, record_id, file, doc_type, actor)
+
+
+@router.get("/vehicle-record/{record_id}/documents/{doc_id}/file")
+def get_vehicle_document_file_route(
+    record_id: int,
+    doc_id: int,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    data, media, filename = vehicle_document_service.get_document_file(db, record_id, doc_id)
+    return Response(content=data, media_type=media, headers={"Content-Disposition": f'inline; filename="{filename}"'})

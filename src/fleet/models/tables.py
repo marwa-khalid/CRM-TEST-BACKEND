@@ -396,6 +396,28 @@ class FleetVehicleService(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     invoice_url = Column(Text, nullable=True)
 
 
+class FleetVehicleDocument(Base, AuditStampMixin):
+    """A file uploaded against a vehicle record (e.g. a V5C). Kept as history —
+    replacing a V5C adds a new row rather than overwriting, so every upload stays
+    viewable with its own timestamp."""
+    __tablename__ = "fleet_vehicle_document"
+
+    id = Column(Integer, primary_key=True, index=True)
+    vehicle_record_id = Column(
+        Integer, ForeignKey("fleet_vehicle_record.id", ondelete="CASCADE"), index=True, nullable=False,
+    )
+    doc_type = Column(String(50), nullable=True)  # v5c | plating | mot | service_invoice
+    # Set for per-authority certificates (plating/mot); null for record-level docs.
+    authority_id = Column(Integer, nullable=True, index=True)
+    # Set for per-service-card invoices (service_invoice); null for record-level docs.
+    service_id = Column(Integer, nullable=True, index=True)
+    filename = Column(String(255), nullable=True)
+    s3_key = Column(String(500), nullable=True)
+    file_url = Column(Text, nullable=True)
+    storage_backend = Column(String(50), nullable=True)
+    created_by = Column(Integer, nullable=True)
+
+
 class FleetPcn(Base, AuditStampMixin, AuditByMixin):
     """Penalty Charge Notice details for a hire file."""
     __tablename__ = "fleet_pcn"

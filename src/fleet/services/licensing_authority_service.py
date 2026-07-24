@@ -1,12 +1,17 @@
 """Licensing authorities for a vehicle record (up to four per vehicle)."""
 from datetime import date
-from typing import List, Optional
+from io import BytesIO
+import re
+from types import SimpleNamespace
+from typing import List, Optional, Tuple
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from fleet.deps import S3Service
-from fleet.models.tables import FleetVehicleLicensingAuthority
+from fleet.models.tables import FleetHire, FleetHireVehicle, FleetVehicleLicensingAuthority
+from fleet.services import generated_document_service, vehicle_document_service
 
 MAX_AUTHORITIES = 4
 
@@ -105,6 +110,13 @@ def upload_certificate(
     setattr(authority, key_field, result.get("s3_key"))
     setattr(authority, url_field, result.get("file_url"))
     db.commit()
+    # Keep a per-authority document history so every uploaded certificate stays
+    # viewable (latest + "Show all"), mirroring the V5C history on screen 1.
+    vehicle_document_service.add_stored_document(
+        db, vehicle_record_id, doc_type=kind, authority_id=authority_id,
+        filename=getattr(file, "filename", None), s3_key=result.get("s3_key"),
+        file_url=result.get("file_url"), storage_backend=result.get("storage_backend"),
+    )
     db.refresh(authority)
     return authority
 
@@ -126,6 +138,106 @@ def remove_certificate(
 
 def _fmt_date(value) -> str:
     return value.strftime("%d/%m/%Y") if value else ""
+
+
+def _normalise_reg(value: Optional[str]) -> str:
+    return "".join(ch for ch in (value or "") if ch.isalnum()).upper()
+
+
+def _safe_filename_part(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "", value or "").strip()
+    return re.sub(r"\s+", " ", cleaned)[:80] or "Licensing Authority"
+
+
+def _authority_filename(authority: FleetVehicleLicensingAuthority) -> str:
+    label = authority.licensing_authority or f"Licensing Authority {authority.position or authority.id}"
+    return f"Raise Authority Letter - {_safe_filename_part(label)}.docx"
+
+
+def _linked_hire_and_vehicle(db: Session, record):
+    hire = None
+    vehicle = None
+    if getattr(record, "hire_id", None):
+        hire = db.query(FleetHire).filter(FleetHire.id == record.hire_id).first()
+    if hire:
+        vehicles = (
+            db.query(FleetHireVehicle)
+            .filter(FleetHireVehicle.hire_id == hire.id)
+            .order_by(FleetHireVehicle.position, FleetHireVehicle.id)
+            .all()
+        )
+        record_reg = _normalise_reg(getattr(record, "registration_number", None))
+        vehicle = next((v for v in vehicles if _normalise_reg(v.registration_number) == record_reg), None)
+        if not vehicle and vehicles:
+            vehicle = vehicles[0]
+    else:
+        hire = SimpleNamespace(
+            id=0,
+            fleet_reference="",
+            driver_name="",
+            driver_address="",
+            driver_postcode="",
+            date_of_birth=None,
+            driving_licence_number="",
+            driving_licence_end=None,
+            weekly_hire_payment=None,
+            vehicle_cost_per_week=None,
+            security_deposit=None,
+            deposit=None,
+            payment_hire_start_date=None,
+            hire_start_date=None,
+            payment_hire_end_date=None,
+            hire_end_date=None,
+            make=getattr(record, "make", "") or "",
+            model=getattr(record, "model", "") or "",
+            registration_number=getattr(record, "registration_number", "") or "",
+        )
+    if not vehicle:
+        vehicle = SimpleNamespace(
+            registration_number=getattr(record, "registration_number", "") or "",
+            make=getattr(record, "make", "") or "",
+            model=getattr(record, "model", "") or "",
+            vehicle_cost_per_week=getattr(hire, "vehicle_cost_per_week", None),
+            deposit=getattr(hire, "deposit", None),
+            hire_start_date=getattr(hire, "hire_start_date", None),
+            hire_start_time="",
+            hire_end_date=getattr(hire, "hire_end_date", None),
+            checkout_date=None,
+            checkout_time="",
+            mileage_start="",
+            mileage_end="",
+        )
+    return hire, vehicle
+
+
+def build_letters_download(
+    db: Session,
+    record,
+    authorities: List[FleetVehicleLicensingAuthority],
+) -> Tuple[bytes, str, str]:
+    """Return separate manager-template DOCX letters, zipped when needed."""
+    active_authorities = [authority for authority in authorities if not getattr(authority, "is_deleted", False)]
+    if not active_authorities:
+        raise HTTPException(status_code=400, detail="Add a licensing authority before raising letters.")
+
+    hire, vehicle = _linked_hire_and_vehicle(db, record)
+    files = [
+        (
+            _authority_filename(authority),
+            generated_document_service.render_raise_authority_letter_docx(hire, vehicle, db),
+        )
+        for authority in active_authorities
+    ]
+
+    if len(files) == 1:
+        filename, data = files[0]
+        return data, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename
+
+    output = BytesIO()
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as zf:
+        for filename, data in files:
+            zf.writestr(filename, data)
+    return output.getvalue(), "application/zip", "Licensing Authority Letters.zip"
 
 
 def build_letters_html(

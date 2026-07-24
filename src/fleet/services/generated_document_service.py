@@ -6,6 +6,7 @@ from ``fleet/assets/Documents``; this service exposes them through authenticated
 Fleet routes for download/email attachment.
 """
 from dataclasses import dataclass
+from datetime import date
 from html import escape
 from io import BytesIO
 import mimetypes
@@ -392,6 +393,7 @@ def _document_context(hire, vehicle: Optional[FleetHireVehicle], db: Optional[Se
     licence_expiry = _format_date(hire.driving_licence_end) or _licence_expiry_from_saved_doc(db, hire.id)
 
     return {
+        "document_date": date.today().strftime("%d/%m/%Y"),
         "fleet_reference": (hire.fleet_reference or "").strip(),
         "hirer_name": (hire.driver_name or "").strip(),
         "hirer_address": (hire.driver_address or "").strip(),
@@ -436,11 +438,16 @@ def _replace_sample_text(text: str, ctx: dict) -> str:
     address = ", ".join(part for part in [ctx["hirer_address"], ctx["hirer_postcode"]] if part)
     replacements = {
         "Mr SabER Mehrabi": ctx["hirer_name"],
+        "Mona Lisa": ctx["hirer_name"],
         "54 Highfields court t , Leasowes Drive , WV44PZ": address,
         "54 Highfields court t , Leasowes Drive": ctx["hirer_address"],
         "54 Highfields court t \nLeasowes Drive": ctx["hirer_address"],
+        "9 Anderson Drive Aberdeen Pea, AB15 4ST": address,
         "WV44PZ": ctx["hirer_postcode"],
         "MEHRA901276S99ZM 49": ctx["driving_licence_number"],
+        "LISA753116SM9IJ": ctx["driving_licence_number"],
+        "JK20XYZ": ctx["registration"],
+        "BMW 1 SERIES SE": ctx["vehicle_description"],
         "13/07/26": ctx["hire_start_date"],
         "13/07/2026": ctx["hire_start"],
         "03/02/2026": ctx["hire_end"],
@@ -469,7 +476,12 @@ def _render_docx(asset: GeneratedDocumentAsset, ctx: dict) -> bytes:
     doc = Document(asset.path)
     for paragraph in doc.paragraphs:
         text = paragraph.text.strip()
-        if text.startswith("Hirer/Lessee"):
+        if text.startswith("Date:") and "Company:" in text:
+            _set_paragraph_text(
+                paragraph,
+                re.sub(r"Date:\s*\d{1,2}/\d{1,2}/\d{2,4}", f"Date:{ctx['document_date']}", paragraph.text),
+            )
+        elif text.startswith("Hirer/Lessee"):
             _set_paragraph_text(paragraph, f"Hirer/Lessee (you/your) - \t{ctx['hirer_full']}")
         elif text.startswith("Full Name:") and "of" in text:
             _set_paragraph_text(paragraph, f"Full Name: \t\t{ctx['hirer_full']}")
@@ -477,8 +489,10 @@ def _render_docx(asset: GeneratedDocumentAsset, ctx: dict) -> bytes:
             _set_paragraph_text(paragraph, f"Full Name: {ctx['hirer_name']}")
         elif text.startswith("Driver Name:"):
             _set_paragraph_text(paragraph, f"Driver Name:\t\t\t{ctx['hirer_name']}")
-        elif text.startswith("Address:") and any(sample in text for sample in ["54 Highfields", "Leasowes", "WV44PZ"]):
+        elif text.startswith("Address:") and "Church Lane" not in text:
             _set_paragraph_text(paragraph, f"Address:\t\t\t{', '.join(part for part in [ctx['hirer_address'], ctx['hirer_postcode']] if part)}")
+        elif text.startswith("Driving License Number:"):
+            _set_paragraph_text(paragraph, f"Driving License Number:\t{ctx['driving_licence_number']}")
         elif text.startswith("Vehicle Registration:"):
             _set_paragraph_text(paragraph, f"Vehicle Registration:\t{ctx['registration']}")
         elif text.startswith("Make & Model:"):
@@ -507,6 +521,12 @@ def _render_docx(asset: GeneratedDocumentAsset, ctx: dict) -> bytes:
     output = BytesIO()
     doc.save(output)
     return output.getvalue()
+
+
+def render_raise_authority_letter_docx(hire, vehicle: Optional[FleetHireVehicle], db: Optional[Session] = None) -> bytes:
+    """Render the manager-provided Raise Authority Letter template as a DOCX."""
+    asset = DOCUMENT_GROUPS["raise_authority_letter"][0]
+    return _render_asset(asset, _document_context(hire, vehicle, db))
 
 
 def _existing_xls_style_idx(ws, row: int, col: int):

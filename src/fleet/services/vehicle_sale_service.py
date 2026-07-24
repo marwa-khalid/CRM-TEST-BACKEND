@@ -32,7 +32,7 @@ def _vehicle_line(record: FleetVehicleRecord) -> str:
     return " ".join(p for p in parts if p) or EM_DASH
 
 
-def build_sale_documents_html(record: FleetVehicleRecord) -> str:
+def build_sale_documents_html(record: FleetVehicleRecord, show_print_button: bool = True) -> str:
     """Release of Liability + Sale Receipt, one per page."""
     today = date.today().strftime("%d %B %Y")
     reg = (record.registration_number or "").strip() or EM_DASH
@@ -53,6 +53,8 @@ def build_sale_documents_html(record: FleetVehicleRecord) -> str:
         <tr><th>Vehicle</th><td>{escape(vehicle)}</td></tr>
         <tr><th>Chassis number (VIN)</th><td>{escape(vin)}</td></tr>
         <tr><th>Date of sale</th><td>{escape(sold_on)}</td></tr>"""
+
+    header_action = '<button onclick="window.print()">Print</button>' if show_print_button else ""
 
     return f"""<!doctype html>
 <html>
@@ -83,7 +85,7 @@ def build_sale_documents_html(record: FleetVehicleRecord) -> str:
     </style>
   </head>
   <body>
-    <header><h1>Vehicle Sale Documents</h1><button onclick="window.print()">Print</button></header>
+    <header><h1>Vehicle Sale Documents</h1>{header_action}</header>
 
     <section class="doc">
       <div class="head">

@@ -102,7 +102,7 @@ def render_deposit_refund(data: dict, include_logo: bool = True) -> str:
     deductions = _box(
         _heading("Refund Breakdown")
         + _divider().join([
-            _row("Deposit Amount", g("deposit")),
+            _row("Security Deposit Amount", g("deposit")),
             _row("Valeting Fee", g("valeting_fee")),
             _row("Vehicle Damages", g("vehicle_damages")),
             _row("Additional Charges", g("additional_charges")),
