@@ -317,3 +317,68 @@ def list_due_reminders(db: Session, today: Optional[date] = None) -> List[Dict]:
 
     out.sort(key=lambda x: x["expiry_date"])
     return out
+
+
+def list_all_expiries(db: Session) -> List[Dict]:
+    """Every vehicle expiry (road fund / plate / MOT) with its actual date, for
+    the Fleet calendar.
+
+    Unlike ``list_due_reminders`` this is NOT limited to the 7-day due window and
+    is read straight from the source tables — so the calendar shows the real
+    future dates and covers records that predate the system-event sync. Titles
+    are static ("<kind> expiry — <vehicle>"), never time-relative, because they
+    sit on a fixed calendar day.
+    """
+    out: List[Dict] = []
+
+    records = (
+        db.query(FleetVehicleRecord)
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
+        .filter(FleetVehicleRecord.road_tax_expiry_date.isnot(None))
+        .all()
+    )
+    for record in records:
+        label = _vehicle_label(record)
+        out.append({
+            "kind": "road_tax",
+            "title": f"Road Fund expiry — {label}",
+            "vehicle": label,
+            "expiry_date": record.road_tax_expiry_date.isoformat(),
+            "hire_id": record.hire_id,
+        })
+
+    authorities = (
+        db.query(FleetVehicleLicensingAuthority)
+        .filter(FleetVehicleLicensingAuthority.is_deleted.isnot(True))
+        .all()
+    )
+    records_by_id: Dict[int, FleetVehicleRecord] = {}
+    for authority in authorities:
+        record = records_by_id.get(authority.vehicle_record_id)
+        if record is None:
+            record = (
+                db.query(FleetVehicleRecord)
+                .filter(FleetVehicleRecord.id == authority.vehicle_record_id)
+                .filter(FleetVehicleRecord.is_deleted.isnot(True))
+                .first()
+            )
+            if not record:
+                continue
+            records_by_id[authority.vehicle_record_id] = record
+        label = _vehicle_label(record)
+        for kind, expiry, noun in (
+            ("plating", authority.plating_expiry_date, "Plate"),
+            ("mot", authority.mot_expiry_date, "MOT"),
+        ):
+            if not expiry:
+                continue
+            out.append({
+                "kind": kind,
+                "title": f"{noun} expiry — {label}",
+                "vehicle": label,
+                "expiry_date": expiry.isoformat(),
+                "hire_id": record.hire_id,
+            })
+
+    out.sort(key=lambda x: x["expiry_date"])
+    return out
