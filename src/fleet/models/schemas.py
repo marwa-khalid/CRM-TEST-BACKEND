@@ -526,6 +526,9 @@ class VehicleRecordUpdate(BaseModel):
 
 class VehicleRecordResponse(VehicleRecordUpdate):
     id: int
+    # Links the customer-side record back to its hire — used by the listing to
+    # override a hire's status with "In Repair" from the vehicle record.
+    hire_id: Optional[int] = None
     # Calculated server-side as one year after road_tax_renewed_on (read-only).
     road_tax_expiry_date: Optional[date] = None
     # Section C — read-only, pulled from the Skyline (client-side) hire screens.

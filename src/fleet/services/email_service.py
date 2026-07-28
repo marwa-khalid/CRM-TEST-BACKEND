@@ -429,3 +429,58 @@ def render_fleet_notice(body: str, heading: str = "", include_logo: bool = True)
         '<p style="font-weight:600;">Kind regards,<br>Skyline Car Hire (UK) Ltd</p></div>'
         "</div>"
     )
+
+
+def render_accounts_sold_notice(body: str, heading: str = "", include_logo: bool = True) -> str:
+    """"Notify Accounts of vehicle sold" — structured layout from the edited body.
+
+    Renders, in order: centred greeting ("Hi"), a boxed vehicle panel, the note
+    paragraph(s) centred, then a boxed purchaser panel — same visual language as
+    the other Fleet emails. The body stays editable in the preview; on send its
+    ``Label: value`` lines are routed to the right box and everything else forms
+    the note, so what the user typed comes out on-template.
+    """
+    vehicle_rows: List[str] = []
+    purchaser_rows: List[str] = []
+    greeting = ""
+    note_parts: List[str] = []
+    closing_parts: List[str] = []
+
+    for raw in (body or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        label, sep, value = line.partition(":")
+        lab = label.strip().lower()
+        if sep and lab in ("vehicle make/model", "vehicle registration", "vehicle reg"):
+            vehicle_rows.append(_row(label.strip(), value.strip()))
+        elif sep and lab in ("purchaser name", "purchaser address", "purchaser postcode", "buyer", "buyer name"):
+            purchaser_rows.append(_row(label.strip(), value.strip()))
+        elif line.lower().rstrip(",") in ("hi", "hello", "dear sirs"):
+            greeting = line
+        elif line.lower().startswith("please see the file"):
+            # The "see the file for receipt…" line closes the email, below the
+            # purchaser details rather than in the note above the boxes.
+            closing_parts.append(escape(line))
+        else:
+            note_parts.append(escape(line))
+
+    greeting_html = _centered_text(f"<p style='margin:0;font-weight:600;text-align:center;'>{escape(greeting)}</p>") if greeting else ""
+    vehicle_box = _box(_heading(heading or "Vehicle Details") + _divider().join(vehicle_rows)) if vehicle_rows else ""
+    note_html = _centered_text("<p style='margin:0;'>" + "<br><br>".join(note_parts) + "</p>") if note_parts else ""
+    purchaser_box = _box(_heading("Purchaser Details") + _divider().join(purchaser_rows)) if purchaser_rows else ""
+    closing_html = _centered_text("<p style='margin:0;'>" + "<br><br>".join(closing_parts) + "</p>") if closing_parts else ""
+
+    logo = ('<div style="text-align:center;">' + _LOGO_IMG + "</div>") if include_logo else ""
+    return (
+        '<div style="font-family:Arial,sans-serif;background:#ffffff;padding:20px;color:#334155;">'
+        + logo
+        + greeting_html
+        + vehicle_box
+        + note_html
+        + purchaser_box
+        + closing_html
+        + '<div style="text-align:center;font-size:12px;border-top:1px solid #eee;padding-top:20px;margin-top:10px;">'
+        '<p style="font-weight:600;">Kind regards,<br>Skyline Car Hire (UK) Ltd</p></div>'
+        "</div>"
+    )

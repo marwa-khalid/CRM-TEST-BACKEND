@@ -283,11 +283,11 @@ def sale_documents_download_route(
 ):
     """Download Release of Liability + Sale Receipt directly."""
     record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
-    html = vehicle_sale_service.build_sale_documents_html(record, show_print_button=False)
+    document = vehicle_sale_service.build_sale_documents_docx(record)
     return Response(
-        content=html.encode("utf-8"),
-        media_type="application/msword",
-        headers={"Content-Disposition": 'attachment; filename="Release of Liability and Receipt.doc"'},
+        content=document,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="Release of Liability and Receipt.docx"'},
     )
 
 
@@ -390,6 +390,80 @@ def send_appointment_passed_email_route(
 
     result = fleet_email_service.send_email(to=to, subject=subject, html=html, cc=payload.cc)
 
+    if isinstance(result, dict) and result.get("status") == "failed":
+        raise HTTPException(status_code=502, detail=result.get("detail") or "Email could not be sent.")
+    return {"status": "sent", "to": to}
+
+
+# ── Inform Accounts (De Fleet vehicle sold) email ────────────────────────────
+def _accounts_email_content(record) -> tuple:
+    """(subject, editable body) for the "Inform Accounts" email — mirrors the
+    RaiseAuthorityEmail template, filled from the sale record."""
+    reg = (record.registration_number or "").strip() or "—"
+    make_model = " ".join(p for p in [(record.make or "").strip(), (record.model or "").strip()] if p) or "—"
+    inc_fmt = "—"
+    try:
+        raw = str(record.sold_for_inc_vat or "").replace(",", "").replace("£", "").strip()
+        if raw:
+            inc_fmt = f"£{float(raw):,.2f}"
+    except ValueError:
+        inc_fmt = f"£{record.sold_for_inc_vat}"
+    purchaser = (record.purchaser_name or "").strip()
+    address = ", ".join(
+        p.strip() for p in [(record.purchaser_address or "").strip(), (record.purchaser_postcode or "").strip()] if p.strip()
+    )
+    subject = "Notify Accounts of De Fleet Vehicle Sold"
+    body = "\n".join([
+        f"Vehicle Make/Model: {make_model}",
+        f"Vehicle Registration: {reg}",
+        "",
+        "Hi",
+        "",
+        f"Please note that we have sold the ex fleet vehicle above to the following buyer today and that payment has been received in full for {inc_fmt}.",
+        "",
+        f"Purchaser Name: {purchaser or '—'}",
+        f"Purchaser Address: {address or '—'}",
+        "",
+        "Please see the file for receipt of sale and release of liability agreement.",
+    ])
+    return subject, body
+
+
+def _render_accounts_html(record, body: str = "") -> str:
+    if not body:
+        _subject, body = _accounts_email_content(record)
+    return fleet_email_service.render_accounts_sold_notice(body, heading="Vehicle Details")
+
+
+@router.get("/vehicle-record/{record_id}/sale/accounts-email/preview", response_model=AppointmentEmailPreviewResponse)
+def preview_accounts_email_route(
+    record_id: int,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+    user: dict = Depends(authenticate),
+):
+    record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    subject, body = _accounts_email_content(record)
+    html = _render_accounts_html(record)
+    to = (user or {}).get("user_name") or fleet_email_service.FLEET_INBOX
+    return AppointmentEmailPreviewResponse(to=to, subject=subject, body=body, html=html)
+
+
+@router.post("/vehicle-record/{record_id}/sale/accounts-email")
+def send_accounts_email_route(
+    record_id: int,
+    payload: AppointmentPassedEmailRequest,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+    user: dict = Depends(authenticate),
+):
+    record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    default_subject, default_body = _accounts_email_content(record)
+    to = (payload.to or "").strip() or (user or {}).get("user_name") or fleet_email_service.FLEET_INBOX
+    subject = (payload.subject or "").strip() or default_subject
+    message = payload.body if payload.body is not None else default_body
+    html = _render_accounts_html(record, message)
+    result = fleet_email_service.send_email(to=to, subject=subject, html=html, cc=payload.cc)
     if isinstance(result, dict) and result.get("status") == "failed":
         raise HTTPException(status_code=502, detail=result.get("detail") or "Email could not be sent.")
     return {"status": "sent", "to": to}

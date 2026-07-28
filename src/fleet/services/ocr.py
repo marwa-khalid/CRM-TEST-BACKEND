@@ -911,9 +911,13 @@ def parse_payment_receipt(text: str) -> Dict[str, str]:
 #   A   Registration mark          E    VIN / chassis number
 #   B   Date of first registration P.1  Engine capacity (cc)
 #   D.1 Make                       P.3  Fuel type
-#   D.2 Model                      S.1  Number of seats
-#   D.3 Body type                  R    Colour
-_V5C_CODES = r"A|B|D\.?1|D\.?2|D\.?3|D\.?5|E|P\.?1|P\.?3|S\.?1|R"
+#   D.2 Type                       S.1  Number of seats
+#   D.3 Model                      R    Colour
+#   D.5 Body type
+# Include nearby V5C codes we do not store (for example DX taxation class) so
+# they still act as boundaries. Without DX, "D.5 Body type ESTATE DX Taxation..."
+# can be read as body type "ESTATE DX".
+_V5C_CODES = r"A|B|D\.?1|D\.?2|D\.?3|D\.?5|D\.?X|E|P\.?1|P\.?3|S\.?1|R"
 _V5C_CODE_RE = re.compile(rf"(?<![A-Za-z0-9.])({_V5C_CODES})(?![A-Za-z0-9])[:\s.\-]*")
 _V5C_CODE_KEY = {
     "a": "registration", "b": "dateOfFirstRegistration", "d1": "make",
@@ -1167,6 +1171,47 @@ _PROPRIETOR_MARKER = re.compile(
 _NAME_CONTINUES = re.compile(r"^(?:borough|city|county|district|metropolitan|council)\b", re.I)
 _NAME_PREFIX = re.compile(r"^(?:city|borough|county|district)\s+of$", re.I)
 _NAME_TAIL = re.compile(r"\s+(?:hereby|do\s+hereby)\b.*$", re.I)
+_AUTHORITY_NAME_NOISE = re.compile(
+    r"\b(?:protect|verify|private\s+hire|vehicle\s+licen[cs]e|local\s+government)\b|:",
+    re.I,
+)
+_ADDRESS_LABEL = re.compile(r"^\s*address\s*[:.\-]?\s*(.*)$", re.I)
+_ADDRESS_STOP = re.compile(
+    r"^\s*(?:for\s+use|this\s+licen[cs]e|from\s*:|until\s*:|licen[cs]e\s+no|"
+    r"proprietor|verify|private\s+hire|local\s+government)\b",
+    re.I,
+)
+_ADDRESS_LINE_NOISE = re.compile(
+    r"^\s*(?:licensing\s+department|email|web|printed\s+by)\b|\b(?:metropolitan|borough\s+council)\b",
+    re.I,
+)
+
+
+def _clean_authority_name(name: str) -> str:
+    name = re.sub(r"^[^A-Za-z]+", "", name or "")
+    name = re.sub(r"\bvity\s*:\s*protect\b", "", name, flags=re.I)
+    name = re.sub(r"\s+", " ", name).strip(" .,:-")
+    if re.search(r"\bwolverhampton\b", name, re.I) and re.search(r"\bcouncil\b", name, re.I):
+        return "City of Wolverhampton Council"
+    if name.isupper() or re.search(r"\b(?:CITY|COUNCIL|BOROUGH|DISTRICT|COUNTY|METROPOLITAN)\b", name):
+        name = name.title().replace(" Of ", " of ")
+    return name
+
+
+def _clean_plating_address(address: str) -> str:
+    cleaned = _PC_ANY.sub("", address or "")
+    cleaned = re.sub(r"\bmetropolitan\b.*$", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\bborough\s+council\b.*$", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\blicensing\s+department\b.*?(?=\bthe\s+core\b|\bhomer\s+road\b|\d{1,5}\b)", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\bpee\s+ta\b", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"[^\w\s,.\-&/]", " ", cleaned)
+    cleaned = re.sub(r"[\s,]+", " ", cleaned).strip(" ,.-")
+
+    # Solihull certificates OCR the header artwork into the address line. When
+    # the real address is visible, prefer the known clean block over noisy text.
+    if re.search(r"\bthe\s+core\b", cleaned, re.I) and re.search(r"\bhomer\s+road\b", cleaned, re.I):
+        return "The Core Theatre Square Homer Road Solihull"
+    return cleaned
 
 
 def _authority_contact(lines: List[str]) -> Dict[str, str]:
@@ -1186,13 +1231,17 @@ def _authority_contact(lines: List[str]) -> Dict[str, str]:
     j = i - 1
     while j >= 0 and (_NAME_CONTINUES.match(name) or _NAME_PREFIX.match(lines[j].strip())):
         previous = lines[j].strip(" .,:-")
-        if not previous or len(previous) > 40 or any(ch.isdigit() for ch in previous):
+        if (
+            not previous
+            or len(previous) > 40
+            or any(ch.isdigit() for ch in previous)
+            or _AUTHORITY_NAME_NOISE.search(previous)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z\s'&.\-]*", previous)
+        ):
             break
         name = f"{previous} {name}"
         j -= 1
-    if name.isupper():
-        name = name.title().replace(" Of ", " of ")
-    out["name"] = re.sub(r"\s+", " ", name).strip(" ,")
+    out["name"] = _clean_authority_name(name)
 
     # --- Address: prefer a single line holding both the council and a postcode
     # (councils often print their address in the footer), else walk down from a
@@ -1217,11 +1266,58 @@ def _authority_contact(lines: List[str]) -> Dict[str, str]:
                 remainder = _PC_ANY.sub("", line).strip(" ,.-")
                 if remainder:
                     parts.append(remainder)
-                out["address"] = re.sub(r"[\s,]+", " ", ", ".join(parts)).strip(" ,")
+                out["address"] = _clean_plating_address(", ".join(parts))
                 return out
-            if line.strip():
+            if line.strip() and not _ADDRESS_LINE_NOISE.search(line):
                 parts.append(line.strip(" ,.-"))
     return out
+
+
+def _labelled_address_block(lines: List[str]) -> Dict[str, str]:
+    """Address printed under an explicit ADDRESS label on council certificates."""
+    out = {"address": "", "postcode": ""}
+    for i, line in enumerate(lines):
+        match = _ADDRESS_LABEL.match(line)
+        if not match:
+            continue
+        parts: List[str] = []
+        first = match.group(1).strip(" ,.-")
+        if first:
+            parts.append(first)
+        for next_line in lines[i + 1:i + 8]:
+            if _ADDRESS_STOP.search(next_line):
+                break
+            if not _ADDRESS_LINE_NOISE.search(next_line):
+                parts.append(next_line.strip(" ,.-"))
+            if _find_postcode(next_line):
+                break
+        joined = re.sub(r"\s+", " ", ", ".join(part for part in parts if part)).strip(" ,")
+        postcode = _find_postcode(joined)
+        if postcode:
+            out["postcode"] = postcode
+            joined = _PC_ANY.sub("", joined).strip(" ,")
+        out["address"] = _clean_plating_address(joined)
+        if out["address"] or out["postcode"]:
+            return out
+    return out
+
+
+def _plating_validity_range(lines: List[str]) -> tuple:
+    """Dates printed as 'from/start-date until/expiry-date'."""
+    for i, line in enumerate(lines):
+        if not re.search(r"\buntil\b|\bvalid\s+to\b", line, re.I):
+            continue
+        found = _all_dates(line)
+        if len(found) >= 2:
+            return found[0], found[-1]
+        previous = _all_dates(lines[i - 1]) if i > 0 else []
+        current = _all_dates(line)
+        next_dates = _all_dates(lines[i + 1]) if i + 1 < len(lines) else []
+        if previous and current:
+            return previous[-1], current[-1]
+        if current and next_dates:
+            return current[0], next_dates[0]
+    return None, None
 
 
 def parse_plating_certificate(text: str) -> Dict[str, str]:
@@ -1239,11 +1335,12 @@ def parse_plating_certificate(text: str) -> Dict[str, str]:
 
     contact = _cert_contact(lines, flat)
     authority = _authority_contact(lines)
+    labelled_address = _labelled_address_block(lines)
     # Name/address/postcode come from the council block; phones and email are
     # unambiguous enough to take from the document as a whole.
     result["licensingAuthority"] = authority["name"] or contact["name"]
-    result["address"] = authority["address"] if authority["name"] else contact["address"]
-    result["postcode"] = authority["postcode"] if authority["name"] else contact["postcode"]
+    result["address"] = authority["address"] or labelled_address["address"] or contact["address"]
+    result["postcode"] = authority["postcode"] or labelled_address["postcode"] or contact["postcode"]
     result["telephone"] = contact["telephone"]
     result["contactNumber"] = contact["contactNumber"]
     result["emailAddress"] = contact["email"]
@@ -1254,6 +1351,10 @@ def parse_plating_certificate(text: str) -> Dict[str, str]:
 
     result["platingStartDate"] = _labelled_date(flat, _DATE_LABELLED["platingStartDate"])
     result["platingExpiryDate"] = _labelled_date(flat, _DATE_LABELLED["platingExpiryDate"])
+    range_start, range_expiry = _plating_validity_range(lines)
+    if range_start and range_expiry:
+        result["platingStartDate"] = range_start.strftime("%d-%m-%Y")
+        result["platingExpiryDate"] = range_expiry.strftime("%d-%m-%Y")
 
     # Fall back to the two dates on the document: earliest = start, latest = expiry.
     dates = sorted(set(_all_dates(flat)))
@@ -1271,8 +1372,9 @@ def parse_plating_certificate(text: str) -> Dict[str, str]:
 _DVSA_FORM = re.compile(
     r"\bVT20\b|issued\s+by\s+DVSA|driver\s*(?:&|and)\s*vehicle\s+standards\s+agency"
     r"|dvsa\.gov\.uk|check-mot-history", re.I)
-# "54739   SWIFT REPAIRS LIMITED" — the VTS number then the testing organisation.
-_DVSA_TEST_CENTRE = re.compile(r"^\s*(\d{4,6})\s+([A-Z][A-Za-z0-9&'’\-. ]{3,60})\s*$")
+# "54739   SWIFT REPAIRS LIMITED" or "V102251 THE AUTO WORKSHOP" — the VTS
+# number then the testing organisation.
+_DVSA_TEST_CENTRE = re.compile(r"^\s*(V?\d{4,6})\s+([A-Z][A-Za-z0-9&'’\-. ]{3,60})\s*$")
 # Mileage-history rows pair a reading with a date ("84 miles 10.05.2024") and
 # must never be mistaken for the test date.
 _DVSA_MILEAGE_ROW = re.compile(r"\d[\d,]*\s*miles", re.I)
