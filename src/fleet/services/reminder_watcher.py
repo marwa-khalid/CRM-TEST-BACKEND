@@ -337,12 +337,17 @@ def list_all_expiries(db: Session) -> List[Dict]:
         .filter(FleetVehicleRecord.road_tax_expiry_date.isnot(None))
         .all()
     )
+    def _make_model(rec) -> str:
+        return " ".join(p for p in ((rec.make or "").strip(), (rec.model or "").strip()) if p)
+
     for record in records:
         label = _vehicle_label(record)
         out.append({
             "kind": "road_tax",
             "title": f"Road Fund expiry — {label}",
             "vehicle": label,
+            "make_model": _make_model(record),
+            "authority": "DVLA",
             "expiry_date": record.road_tax_expiry_date.isoformat(),
             "hire_id": record.hire_id,
         })
@@ -366,9 +371,9 @@ def list_all_expiries(db: Session) -> List[Dict]:
                 continue
             records_by_id[authority.vehicle_record_id] = record
         label = _vehicle_label(record)
-        for kind, expiry, noun in (
-            ("plating", authority.plating_expiry_date, "Plate"),
-            ("mot", authority.mot_expiry_date, "MOT"),
+        for kind, expiry, noun, auth in (
+            ("plating", authority.plating_expiry_date, "Plate", authority.licensing_authority),
+            ("mot", authority.mot_expiry_date, "MOT", authority.mot_centre_name),
         ):
             if not expiry:
                 continue
@@ -376,6 +381,8 @@ def list_all_expiries(db: Session) -> List[Dict]:
                 "kind": kind,
                 "title": f"{noun} expiry — {label}",
                 "vehicle": label,
+                "make_model": _make_model(record),
+                "authority": (auth or "").strip() or None,
                 "expiry_date": expiry.isoformat(),
                 "hire_id": record.hire_id,
             })

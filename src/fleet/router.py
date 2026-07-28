@@ -9,6 +9,7 @@ from fleet.routers.document_router import router as document_router
 from fleet.routers.email_router import router as email_router
 from fleet.routers.generated_document_router import router as generated_document_router
 from fleet.routers.hire_router import router as hire_router
+from fleet.routers.map_router import router as map_router
 from fleet.routers.ocr_router import router as ocr_router
 from fleet.routers.payment_router import router as payment_router
 from fleet.routers.pcn_router import router as pcn_router
@@ -21,6 +22,7 @@ fleet_router = APIRouter(prefix="/fleet", tags=["Fleet"], dependencies=[Depends(
 
 fleet_router.include_router(ocr_router)
 fleet_router.include_router(hire_router)
+fleet_router.include_router(map_router)
 fleet_router.include_router(vehicle_router)
 fleet_router.include_router(document_router)
 fleet_router.include_router(generated_document_router)

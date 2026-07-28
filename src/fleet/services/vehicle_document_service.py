@@ -88,3 +88,17 @@ def get_document_file(db: Session, vehicle_record_id: int, doc_id: int) -> Tuple
         raise HTTPException(status_code=404, detail="File not available")
     media = mimetypes.guess_type(doc.filename or doc.s3_key)[0] or "application/octet-stream"
     return data, media, (doc.filename or "document")
+
+
+def delete_document(db: Session, vehicle_record_id: int, doc_id: int) -> None:
+    """Remove a single uploaded document (history row) from a vehicle record."""
+    doc = (
+        db.query(FleetVehicleDocument)
+        .filter(FleetVehicleDocument.id == doc_id)
+        .filter(FleetVehicleDocument.vehicle_record_id == vehicle_record_id)
+        .first()
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    db.delete(doc)
+    db.commit()

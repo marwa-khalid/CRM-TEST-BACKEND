@@ -56,6 +56,10 @@ def _notify_task_assigned(db: Session, task: Task, current_user, title: str = "N
     recipient_user_id = _assignee_recipient(db, task.assigned_user, tenant_id, current_user)
     actor_name = _user_display(db, current_user)
     is_high = (task.priority or "").strip().lower() == "high"
+    # Fleet-department tasks are marked with category="Fleet" — the Fleet bell
+    # includes them (and the Claims bell excludes them) on that marker, while the
+    # tab stays Tasks / High Priority so they land in the right tab, not "Fleet".
+    is_fleet = (getattr(task, "department", "") or "").strip().lower() == "fleet"
     ref = f" ({task.claim_reference})" if task.claim_reference else ""
     suffix = f" Reason: {reason}" if reason else ""
     safe_notify(
@@ -63,7 +67,7 @@ def _notify_task_assigned(db: Session, task: Task, current_user, title: str = "N
         recipient_user_id=recipient_user_id,
         tenant_id=tenant_id,
         actor_user_id=current_user,
-        category="High Priority" if is_high else "Task",
+        category="Fleet" if is_fleet else ("High Priority" if is_high else "Task"),
         tab="High Priority" if is_high else "Tasks",
         title=title,
         description=f"{actor_name} assigned you a task: {task.title}{ref}.{suffix}",

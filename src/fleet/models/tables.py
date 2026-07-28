@@ -3,7 +3,7 @@ Fleet domain stays independent of Claims and can be extracted later. Shares the
 same declarative Base/metadata as the rest of libdata so one Alembic migration
 and cross-table FKs work.
 """
-from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, DateTime, Date, Text
+from sqlalchemy import Boolean, Column, Float, Integer, String, ForeignKey, DateTime, Date, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -473,3 +473,32 @@ class FleetPcnReminder(Base, AuditStampMixin):
     reminder_date = Column(Date, nullable=True)
     reminder_time = Column(String(10), nullable=True)
     created_by = Column(Integer, nullable=True)
+
+
+class FleetVehicleLocation(Base):
+    """Live-ish GPS position for a fleet vehicle — powers the Fleet Map.
+
+    Standalone table (no FK) so the Fleet slice stays extractable, and so it can
+    be self-seeded with demo positions when empty (see map_service) which keeps
+    the map from ever looking empty in a demo / new environment.
+    """
+    __tablename__ = "fleet_vehicle_location"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, index=True, nullable=True)
+    registration = Column(String(20), index=True, nullable=False)
+    make = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    # On Hire | Available | In Repair | Off Road
+    status = Column(String(50), nullable=True)
+    driver_name = Column(String(200), nullable=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    speed_mph = Column(Integer, nullable=True, default=0)
+    heading = Column(Integer, nullable=True, default=0)  # degrees, 0 = North
+    location_label = Column(String(200), nullable=True)  # where it currently is
+    depot = Column(String(120), nullable=True)           # home depot
+    mileage = Column(Integer, nullable=True)
+    plate_expiry = Column(Date, nullable=True)
+    mot_expiry = Column(Date, nullable=True)
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)

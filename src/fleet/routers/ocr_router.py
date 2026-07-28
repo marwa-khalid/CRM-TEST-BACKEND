@@ -15,7 +15,7 @@ async def ocr_driving_licence_route(file: UploadFile = File(...)):
 @router.post("/ocr/proof-of-address")
 async def ocr_proof_of_address_route(file: UploadFile = File(...)):
     """OCR a proof-of-address image/PDF into address fields."""
-    text = fleet_ocr.taxi_badge_file_to_text(await file.read(), file.filename or "")
+    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
     return fleet_ocr.parse_proof_of_address(text)
 
 
@@ -27,7 +27,7 @@ async def ocr_taxi_badge_route(file: UploadFile = File(...), debug: bool = False
     laminated cards, often with a security hologram over the name, so the raw
     read is the only reliable way to see why a field extracted wrongly.
     """
-    text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
+    text = fleet_ocr.taxi_badge_file_to_text(await file.read(), file.filename or "")
     result = fleet_ocr.parse_taxi_badge(text)
     if debug:
         result["_raw_text"] = text

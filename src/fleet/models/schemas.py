@@ -5,6 +5,29 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 
+class FleetVehicleLocationResponse(BaseModel):
+    """One vehicle's position for the Fleet Map."""
+    id: int
+    registration: str
+    make: Optional[str] = None
+    model: Optional[str] = None
+    status: Optional[str] = None
+    driver_name: Optional[str] = None
+    latitude: float
+    longitude: float
+    speed_mph: Optional[int] = 0
+    heading: Optional[int] = 0
+    location_label: Optional[str] = None
+    depot: Optional[str] = None
+    mileage: Optional[int] = None
+    plate_expiry: Optional[date] = None
+    mot_expiry: Optional[date] = None
+    last_updated: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 class HireUpdate(BaseModel):
     """Partial update — every field optional so the client can field-level PATCH.
     Only fields explicitly sent are applied (see service, exclude_unset)."""

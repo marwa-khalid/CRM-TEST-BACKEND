@@ -1008,6 +1008,32 @@ def get_dashboard(db: Session, tenant_id: Optional[int],
         _net_income_card = round(net_income, 2)
         _debtors_billed_card = _system_calc_excl(db, tenant_id)
 
+    # Real fleet KPIs (temporary cross-module read — moves to a Fleet dashboard
+    # later). Best-effort: any error falls back to the previous static values.
+    try:
+        from datetime import date as _today_date
+        from sqlalchemy import func as _func
+        from fleet.models.tables import FleetHire, FleetVehicleRecord
+        _fleet_total = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True)).count()
+        _fleet_avail = (
+            db.query(FleetVehicleRecord)
+            .filter(FleetVehicleRecord.is_deleted.isnot(True))
+            .filter(_func.lower(FleetVehicleRecord.vehicle_status) == "available")
+            .count()
+        )
+        availability_pct = round(_fleet_avail / _fleet_total * 100) if _fleet_total else 0
+        vehicles_overdue_return = (
+            db.query(FleetHire)
+            .filter(FleetHire.is_deleted.isnot(True))
+            .filter(FleetHire.hire_end_date.isnot(None))
+            .filter(FleetHire.hire_end_date < _today_date.today())
+            .filter(_func.lower(_func.coalesce(FleetHire.hire_status, "")) == "on_hire")
+            .count()
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        availability_pct = 78
+        vehicles_overdue_return = 0
+
     return {
         "trends": trends,
         "stats": {
@@ -1019,7 +1045,7 @@ def get_dashboard(db: Session, tenant_id: Optional[int],
             # on the Outstanding Debtors card.
             "outstanding_debtors_billed": _debtors_billed_card,
             "net_income": _net_income_card,
-            "availability_pct": 78,  # fleet metric — static until Fleet is built
+            "availability_pct": availability_pct,  # real fleet availability
             "urgent_alerts": urgent_alerts,
             "approved_claims": approved_claims,
             "avg_resolution_days": avg_resolution_days,
@@ -1031,7 +1057,7 @@ def get_dashboard(db: Session, tenant_id: Optional[int],
         "attention": {
             "overdue_claims": overdue_claims,
             "missing_documents": missing_documents,
-            "vehicles_overdue_return": 0,  # fleet — static
+            "vehicles_overdue_return": vehicles_overdue_return,  # real fleet count
         },
         "net_income_breakdown": {
             "hire": round(hire, 2),

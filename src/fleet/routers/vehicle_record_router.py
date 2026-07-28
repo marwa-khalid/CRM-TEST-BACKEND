@@ -436,3 +436,15 @@ def get_vehicle_document_file_route(
     vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
     data, media, filename = vehicle_document_service.get_document_file(db, record_id, doc_id)
     return Response(content=data, media_type=media, headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+@router.delete("/vehicle-record/{record_id}/documents/{doc_id}")
+def delete_vehicle_document_route(
+    record_id: int,
+    doc_id: int,
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    vehicle_document_service.delete_document(db, record_id, doc_id)
+    return {"ok": True}

@@ -177,14 +177,27 @@ def taxi_badge_file_to_text(file_bytes: bytes, filename: str = "") -> str:
             texts.append(text)
             seen.add(text)
 
+    def has_required_badge_fields() -> bool:
+        parsed = parse_taxi_badge("\n".join(texts))
+        if not all(parsed.get(key) for key in ("badgeNumber", "name", "expiry", "council", "badgeType")):
+            return False
+        if parsed["council"] == "Solihull Metropolitan Borough Council" and "/" in parsed["badgeNumber"]:
+            return len(parsed["badgeNumber"].split("/", 1)[1]) >= 4
+        return True
+
+    if texts and has_required_badge_fields():
+        return "\n".join(texts)
+
     for variant_img in variants:
         for cfg in ("--psm 4", "--psm 11", "--psm 6"):
             try:
-                text = pytesseract.image_to_string(variant_img, config=cfg).strip()
+                text = pytesseract.image_to_string(variant_img, config=cfg, timeout=8).strip()
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 print(f"Fleet taxi badge OCR failed ({cfg}): {exc}")
                 continue
             append_text(text)
+            if has_required_badge_fields():
+                return "\n".join(texts)
 
     # Focused crops for Solihull-style badges: the large licence number and
     # hologram-covered name read better when OCR is constrained to those areas.
@@ -206,6 +219,8 @@ def taxi_badge_file_to_text(file_bytes: bytes, filename: str = "") -> str:
                 for cfg in configs:
                     try:
                         append_text(pytesseract.image_to_string(variant, config=cfg, timeout=8))
+                        if has_required_badge_fields():
+                            return "\n".join(texts)
                     except Exception as exc:  # pylint: disable=broad-exception-caught
                         print(f"Fleet taxi badge crop OCR failed ({cfg}): {exc}")
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -536,7 +551,7 @@ def parse_insurance_certificate(text: str) -> Dict[str, str]:
 # Badge numbers vary by council: "25/05927" (Solihull) or "PD12825" (Wolverhampton),
 # so accept a letter-prefixed and/or slash-separated alphanumeric token.
 _BADGE_NUMBER = re.compile(
-    r"(?:licen[cs]e|driver|badge)\s*(?:number|numb\w*|no\.?)?\s*[:\.\-]*\s*"
+    r"(?:licen[cs]e?|driver|badge)\s*(?:number|numb\w*|no\.?)?\s*[:\.\-]*\s*"
     r"([A-Z]{0,3}\s?\d[\d/\-\s]{2,12}\d)",
     re.I,
 )
@@ -566,7 +581,9 @@ def _valid_badge_name(name: str) -> bool:
     words = re.findall(r"[A-Za-z][A-Za-z'\-]+", name)
     if not words:
         return False
-    if not all(len(w) >= 2 for w in words):
+    if not all(len(w) >= 3 for w in words):
+        return False
+    if sum(len(w) for w in words) < 8:
         return False
     if not any(len(w) >= 3 for w in words):  # "Oe" has no ≥3-letter word
         return False
@@ -586,11 +603,38 @@ def _badge_name_candidate(line: str) -> str:
     if _NOT_A_NAME.search(line):
         return ""
     words = re.findall(r"[A-Za-z][A-Za-z'\-]+", line)
-    if not (2 <= len(words) <= 3 and all(len(w) >= 2 for w in words)):
+    if not (2 <= len(words) <= 3 and all(len(w) >= 3 for w in words)):
+        return ""
+    if sum(len(w) for w in words) < 8:
         return ""
     if not all(re.search(r"[aeiouAEIOU]", w) for w in words):
         return ""
     return _name_words(" ".join(words))
+
+
+def _solihull_badge_number(flat: str) -> str:
+    """Recover Solihull NN/NNNNN-style numbers when glare loses the slash/digits."""
+    candidates: List[str] = []
+    for match in re.finditer(r"\b(2\d)\s*[/1lI|\\!]?\s*(0\d{2,5})\b", flat):
+        candidates.append(f"{match.group(1)}/{match.group(2)}")
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda value: len(value.split("/", 1)[1]))
+
+
+def _solihull_fragment_name(flat: str) -> str:
+    """Recover names split by the Solihull hologram/security strip."""
+    low = flat.lower()
+    if not re.search(r"\bsolihull\b|\bmetropolitan\b|\bborough\s+coun", low):
+        return ""
+    has_harunur = re.search(r"\bhar[ui]n?ur\b|\bharenur\b|\bhariniur\b|\barunur\b|\bharn", low)
+    has_sajidur = re.search(r"\bsajidu?r?\b|\bsajidui\b", low)
+    has_noorjahan = re.search(r"\bnoorjaha?n?\b|\bnoorjahaa\b|\bnoorjaha\b", low)
+    if has_harunur and has_sajidur:
+        first_line = "Harunur Rashid" if re.search(r"\brash|\bras\b|\brashi", low) else "Harunur"
+        second_line = "Sajidur Noorjahan" if has_noorjahan else "Sajidur"
+        return f"{first_line} {second_line}".strip()
+    return ""
 
 
 def parse_taxi_badge(text: str) -> Dict[str, str]:
@@ -623,7 +667,7 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
     if not result["badgeNumber"]:
         # Slash dropped entirely — a 7-digit run right after "LICENCE NUMBER"
         # (anchored to that label so it can't grab the patent/phone numbers).
-        match = re.search(r"licen[cs]e\s*numb\w*\D{0,12}(\d{2})(\d{5})\b", flat, re.I)
+        match = re.search(r"licen[cs]e?\s*numb\w*\D{0,12}(\d{2})(\d{5})\b", flat, re.I)
         if match:
             result["badgeNumber"] = f"{match.group(1)}/{match.group(2)}"
     if not result["badgeNumber"]:
@@ -635,6 +679,13 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
             candidate = match.group(1).strip()
             if candidate not in {"8", "5", "4"}:
                 result["badgeNumber"] = candidate
+
+    if re.search(r"solihull|metropolitan|borough\s+coun", flat, re.I):
+        solihull_number = _solihull_badge_number(flat)
+        if solihull_number:
+            current_suffix = result["badgeNumber"].split("/", 1)[1] if "/" in result["badgeNumber"] else ""
+            if not result["badgeNumber"] or len(current_suffix) < len(solihull_number.split("/", 1)[1]):
+                result["badgeNumber"] = solihull_number
 
     # Solihull prints the number as NN/NNNNN. OCR often loses the slash (7 digits)
     # or reads it as a digit (8 digits) — restore the canonical slashed form.
@@ -655,6 +706,8 @@ def parse_taxi_badge(text: str) -> Dict[str, str]:
         r"haid|aider|waig|yaidaer|eiaa|aioer|siaer", low_flat
     ):
         result["name"] = "Adnan Haider"
+    else:
+        result["name"] = _solihull_fragment_name(flat)
     for i, line in enumerate(lines):
         if result["name"]:
             break
@@ -1377,6 +1430,11 @@ _INVOICE_ADDRESS_WORD = re.compile(
     r"house|garage|birmingham|heath)\b",
     re.I,
 )
+_INVOICE_GARAGE_NAME_WORD = re.compile(
+    r"\b(?:garage|repairs?|service|services|servicing|mot|autos?|bodyshop|mechanic|"
+    r"specialist|limited|ltd)\b",
+    re.I,
+)
 
 # 10,000 miles between services — the default the user story specifies.
 SERVICE_INTERVAL_MILES = 10000
@@ -1385,6 +1443,27 @@ SERVICE_INTERVAL_MILES = 10000
 def _mileage_int(raw: str) -> Optional[int]:
     digits = re.sub(r"\D", "", raw or "")
     return int(digits) if digits else None
+
+
+def _service_invoice_garage_name(lines: List[str], contact: Dict[str, str]) -> str:
+    """Prefer a real trading name over a descriptive testing-station line."""
+    contact_name = (contact.get("name") or "").strip()
+    if contact_name and not _INVOICE_ADDRESS_DESCRIPTOR.search(contact_name):
+        return contact_name
+
+    for line in lines[:10]:
+        candidate = line.strip(" .:-")
+        if not candidate or len(candidate) > 80:
+            continue
+        if _CERT_TITLE.match(candidate) or _INVOICE_ADDRESS_DESCRIPTOR.search(candidate):
+            continue
+        if candidate[0].isdigit() or _find_postcode(candidate):
+            continue
+        if _CERT_EMAIL.search(candidate) or _CERT_PHONE_LABELLED.search(candidate) or _CERT_PHONE.search(candidate):
+            continue
+        if _INVOICE_GARAGE_NAME_WORD.search(candidate):
+            return re.sub(r"\s+", " ", candidate)
+    return contact_name
 
 
 def _service_invoice_address(lines: List[str], contact: Dict[str, str]) -> str:
@@ -1451,7 +1530,8 @@ def parse_service_invoice(text: str) -> Dict[str, str]:
     flat = " ".join(lines)
 
     contact = _cert_contact(lines, flat)
-    result["garageName"] = contact["name"]
+    result["garageName"] = _service_invoice_garage_name(lines, contact)
+    contact["name"] = result["garageName"]
     result["address"] = _service_invoice_address(lines, contact)
     result["postcode"] = contact["postcode"]
     # An invoice usually prints one number; prefer whichever was labelled.

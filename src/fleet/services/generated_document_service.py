@@ -441,6 +441,98 @@ def _set_paragraph_text(paragraph, text: str):
         paragraph.add_run(text)
 
 
+def _remove_paragraph(paragraph) -> None:
+    element = paragraph._element
+    parent = element.getparent()
+    if parent is not None:
+        parent.remove(element)
+
+
+def _add_external_hyperlink(paragraph, text: str, url: str, font_size: int = 9) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.opc.constants import RELATIONSHIP_TYPE
+
+    rel_id = paragraph.part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), rel_id)
+
+    run = OxmlElement("w:r")
+    run_props = OxmlElement("w:rPr")
+
+    font = OxmlElement("w:rFonts")
+    font.set(qn("w:ascii"), "Arial")
+    font.set(qn("w:hAnsi"), "Arial")
+    run_props.append(font)
+
+    size = OxmlElement("w:sz")
+    size.set(qn("w:val"), str(font_size * 2))
+    run_props.append(size)
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    run_props.append(color)
+
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    run_props.append(underline)
+
+    run.append(run_props)
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    run.append(text_element)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def _install_skyline_letter_footer(doc) -> None:
+    """Move the Skyline contact block out of the body and into a true footer."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Inches, Pt
+
+    footer_markers = (
+        "HYPERLINK",
+        "skylinecarhire.co.uk",
+        "Skyline Car Hire (UK) Ltd, 22, Church Lane",
+    )
+    for paragraph in list(doc.paragraphs):
+        text = paragraph.text.strip()
+        if any(marker.lower() in text.lower() for marker in footer_markers):
+            _remove_paragraph(paragraph)
+
+    for section in doc.sections:
+        section.footer_distance = Inches(0.25)
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        for paragraph in list(footer.paragraphs):
+            _remove_paragraph(paragraph)
+
+        contact = footer.add_paragraph()
+        contact.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        contact.paragraph_format.space_before = Pt(0)
+        contact.paragraph_format.space_after = Pt(2)
+        _add_external_hyperlink(contact, "www.skylinecarhire.co.uk", "http://www.skylinecarhire.co.uk")
+        separator = contact.add_run(" - ")
+        separator.font.name = "Arial"
+        separator.font.size = Pt(9)
+        _add_external_hyperlink(contact, "queries@skylinecarhire.co.uk", "mailto:queries@skylinecarhire.co.uk")
+        phone = contact.add_run(" - 0330 0106 999")
+        phone.font.name = "Arial"
+        phone.font.size = Pt(9)
+
+        company = footer.add_paragraph()
+        company.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        company.paragraph_format.space_before = Pt(0)
+        company.paragraph_format.space_after = Pt(0)
+        run = company.add_run(
+            "Skyline Car Hire (UK) Ltd, 22, Church Lane, London, E11 1HG. "
+            "Skyline Car Hire (UK) Ltd are registered in England and Wales, company number 08456947."
+        )
+        run.font.name = "Arial"
+        run.font.size = Pt(8)
+
+
 def _replace_sample_text(text: str, ctx: dict) -> str:
     address = ", ".join(part for part in [ctx["hirer_address"], ctx["hirer_postcode"]] if part)
     replacements = {
@@ -525,6 +617,9 @@ def _render_docx(asset: GeneratedDocumentAsset, ctx: dict) -> bytes:
             if updated != paragraph.text:
                 _set_paragraph_text(paragraph, updated)
 
+    if asset.source_filename == "Raise Authority Letter.docx":
+        _install_skyline_letter_footer(doc)
+
     output = BytesIO()
     doc.save(output)
     return output.getvalue()
@@ -534,6 +629,34 @@ def render_raise_authority_letter_docx(hire, vehicle: Optional[FleetHireVehicle]
     """Render the manager-provided Raise Authority Letter template as a DOCX."""
     asset = DOCUMENT_GROUPS["raise_authority_letter"][0]
     return _render_asset(asset, _document_context(hire, vehicle, db))
+
+
+def _compact_letter(doc) -> None:
+    """Squeeze a filled letter onto a single page — tighten margins, remove the
+    per-paragraph spacing, single line-spacing, and collapse runs of blank
+    paragraphs (the usual cause of a letter spilling onto page two)."""
+    from docx.shared import Inches, Pt
+
+    for section in doc.sections:
+        section.top_margin = Inches(0.6)
+        section.bottom_margin = Inches(0.6)
+
+    prev_blank = False
+    for paragraph in list(doc.paragraphs):
+        is_blank = not paragraph.text.strip()
+        pf = paragraph.paragraph_format
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(2)
+        pf.line_spacing = 1.0
+        if is_blank:
+            if prev_blank:
+                # Drop repeated blank lines entirely.
+                paragraph._element.getparent().remove(paragraph._element)
+                continue
+            # Shrink a single kept blank line so the gap is small, not a full line.
+            for run in paragraph.runs:
+                run.font.size = Pt(6)
+        prev_blank = is_blank
 
 
 def render_licensing_summary_letter_docx(record, authority, client_name: str = "") -> bytes:
@@ -582,6 +705,9 @@ def render_licensing_summary_letter_docx(record, authority, client_name: str = "
             updated = today
         if updated != original:
             _set_paragraph_text(paragraph, updated)
+
+    _install_skyline_letter_footer(doc)
+    _compact_letter(doc)
 
     output = BytesIO()
     doc.save(output)
