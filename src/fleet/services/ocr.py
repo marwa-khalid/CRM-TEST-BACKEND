@@ -1648,19 +1648,61 @@ def _service_invoice_name_candidate(raw: str) -> str:
     return ""
 
 
+def _service_invoice_relaxed_name(raw: str) -> str:
+    """The first genuine letterhead line, WITHOUT requiring a company word.
+
+    The trading name always sits at the very top, above the descriptive
+    "…Testing Station" line. When OCR mangles a stylised logo enough to drop the
+    "Ltd"/"Repairs" word the strict pass needs, this still recovers the name (even
+    slightly garbled) instead of falling through to the descriptor."""
+    candidate = raw.strip(" .:-")
+    if not candidate:
+        return ""
+    descriptor = _INVOICE_ADDRESS_DESCRIPTOR.search(candidate)
+    if descriptor:
+        candidate = candidate[:descriptor.start()].strip(" .,:-")
+    street_start = _INVOICE_STREET_START.search(candidate)
+    if street_start:
+        candidate = candidate[:street_start.start()].strip(" .,:-")
+    if not candidate or len(candidate) > 60:
+        return ""
+    if _CERT_TITLE.match(candidate):
+        return ""
+    if _INVOICE_ADDRESS_DESCRIPTOR.search(candidate) or _INVOICE_ADDRESS_STOP.search(candidate):
+        return ""
+    if candidate[0].isdigit() or _find_postcode(candidate) or _PC_ANY.search(candidate):
+        return ""
+    if _CERT_EMAIL.search(candidate) or _CERT_PHONE_LABELLED.search(candidate) or _CERT_PHONE.search(candidate):
+        return ""
+    # Needs to read like a name: at least two words and mostly letters.
+    words = [w for w in candidate.split() if w]
+    if len(words) < 2 or sum(c.isalpha() for c in candidate) < 4:
+        return ""
+    return re.sub(r"\s+", " ", candidate)
+
+
 def _service_invoice_garage_name(lines: List[str], contact: Dict[str, str]) -> str:
     """Prefer a real trading name over a descriptive testing-station line."""
     contact_name = (contact.get("name") or "").strip()
 
+    # 1) A line that clearly names a trading entity (has a company word).
     for line in lines[:15]:
         candidate = _service_invoice_name_candidate(line)
         if candidate:
             return candidate
 
+    # 2) The first genuine letterhead line — recovers the trading name even when
+    #    OCR drops the company word, and sits above the "…Testing Station" line.
+    for line in lines[:8]:
+        relaxed = _service_invoice_relaxed_name(line)
+        if relaxed:
+            return relaxed
+
+    # Never fall back to the descriptor ("…Testing Station") itself.
     if contact_name and not _INVOICE_ADDRESS_DESCRIPTOR.search(contact_name):
         cleaned = _service_invoice_name_candidate(contact_name)
         return cleaned or contact_name
-    return contact_name
+    return ""
 
 
 def _service_invoice_address(lines: List[str], contact: Dict[str, str]) -> str:
