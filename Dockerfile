@@ -3,6 +3,10 @@ FROM python:3.11-slim-trixie
 WORKDIR /app
 ENV PYTHONPATH=/app/src
 ENV MPLCONFIGDIR=/tmp/matplotlib
+# Use the exact eng.traineddata bundled in the repo (identical to the dev Mac's
+# Homebrew model) instead of Debian's own — the language model is what makes OCR
+# byte-for-byte reproducible across machines, independent of the engine build.
+ENV TESSDATA_PREFIX=/app/src/fleet/assets/tessdata
 
 # System deps: OpenCV / EasyOCR / WeasyPrint (libgl1, glib, pango, cairo),
 # plus tesseract-ocr (pytesseract, used for scanned-PDF OCR fallback) and

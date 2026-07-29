@@ -5,6 +5,50 @@ from fleet.services import ocr as fleet_ocr
 router = APIRouter()
 
 
+@router.get("/ocr/env")
+def ocr_env_route():
+    """Diagnostic: which OCR engine + language data THIS instance runs. Hit it on
+    localhost and on the deployed URL and compare — the tesseract version AND the
+    eng.traineddata hash both affect the result (same version + different language
+    data still OCRs differently)."""
+    import hashlib
+    import os
+    import platform
+
+    info = {"platform": platform.platform(), "python": platform.python_version()}
+    try:
+        import pytesseract
+
+        info["tesseract_version"] = str(pytesseract.get_tesseract_version())
+        try:
+            info["languages"] = pytesseract.get_languages()
+        except Exception as exc:  # pragma: no cover - diagnostic only
+            info["languages"] = f"error: {exc}"
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        info["tesseract_version"] = f"error: {exc}"
+
+    # eng.traineddata identity — size + short hash tells you if local vs deployed
+    # use a DIFFERENT language model, which is the usual reason results diverge.
+    for d in (
+        os.environ.get("TESSDATA_PREFIX", ""),
+        "/usr/share/tesseract-ocr/5/tessdata",
+        "/usr/share/tesseract-ocr/4.00/tessdata",
+        "/usr/share/tessdata",
+        "/usr/local/share/tessdata",
+        "/opt/homebrew/share/tessdata",
+    ):
+        p = os.path.join(d, "eng.traineddata") if d else ""
+        if p and os.path.exists(p):
+            data = open(p, "rb").read()
+            info["eng_traineddata"] = {"path": p, "bytes": len(data), "sha256_12": hashlib.sha256(data).hexdigest()[:12]}
+            break
+    else:
+        info["eng_traineddata"] = "eng.traineddata not found in known dirs"
+
+    info["vision_key_set"] = bool(os.getenv("GOOGLE_VISION_API_KEY", "").strip())
+    return info
+
+
 @router.post("/ocr/driving-licence")
 async def ocr_driving_licence_route(file: UploadFile = File(...)):
     """OCR a driving-licence image/PDF into driver fields."""
