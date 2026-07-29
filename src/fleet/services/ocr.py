@@ -962,6 +962,54 @@ _V5C_SEATS = re.compile(
     re.I)
 _V5C_DOORS_PREFIX = re.compile(r"\b(\d)\s*-?\s*door\b", re.I)
 _V5C_TRANSMISSION = re.compile(r"\b(automatic|manual|semi[- ]?automatic|cvt)\b", re.I)
+_V5C_MAKE_FALLBACKS = [
+    re.compile(
+        r"\bD\.?\s*1\b\s*[:.\-]?\s*(?:make\s*)?"
+        r"([A-Z][A-Z0-9&/\- ]{1,40}?)(?=\s+(?:D\.?\s*2\b|type\b|variant\b|D\.?\s*3\b|model\b|D\.?\s*5\b|body\s+type\b|E\b|vin\b)|$)",
+        re.I,
+    ),
+    re.compile(
+        r"\bmake\b\s*[:.\-]?\s*"
+        r"([A-Z][A-Z0-9&/\- ]{1,40}?)(?=\s+(?:D\.?\s*2\b|type\b|variant\b|D\.?\s*3\b|model\b|D\.?\s*5\b|body\s+type\b|E\b|vin\b)|$)",
+        re.I,
+    ),
+]
+_V5C_MODEL_FALLBACKS = [
+    re.compile(
+        r"\bD\.?\s*3\b\s*[:.\-]?\s*(?:model\s*)?"
+        r"([A-Z0-9][A-Z0-9&/\-. ]{1,60}?)(?=\s+(?:D\.?\s*5\b|body\s+type\b|D\.?\s*X\b|DX\b|taxation\b|E\b|vin\b|P\.?\s*1\b|engine\b)|$)",
+        re.I,
+    ),
+    re.compile(
+        r"\bmodel\b\s*[:.\-]?\s*"
+        r"([A-Z0-9][A-Z0-9&/\-. ]{1,60}?)(?=\s+(?:D\.?\s*5\b|body\s+type\b|D\.?\s*X\b|DX\b|taxation\b|E\b|vin\b|P\.?\s*1\b|engine\b)|$)",
+        re.I,
+    ),
+]
+_V5C_BODY_FALLBACKS = [
+    re.compile(
+        r"\bD\.?\s*5\b\s*[:.\-]?\s*(?:body\s+type\s*)?"
+        r"([A-Z0-9][A-Z0-9&/\- ]{1,50}?)(?=\s+(?:D\.?\s*X\b|DX\b|taxation\b|E\b|vin\b|P\.?\s*1\b|engine\b|R\b|colou?r\b)|$)",
+        re.I,
+    ),
+    re.compile(
+        r"\bbody\s+type\b\s*[:.\-]?\s*"
+        r"([A-Z0-9][A-Z0-9&/\- ]{1,50}?)(?=\s+(?:D\.?\s*X\b|DX\b|taxation\b|E\b|vin\b|P\.?\s*1\b|engine\b|R\b|colou?r\b)|$)",
+        re.I,
+    ),
+]
+
+
+def _v5c_clean_value(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip(" .,:-")
+
+
+def _v5c_first_match(flat: str, patterns: List[re.Pattern[str]]) -> str:
+    for pattern in patterns:
+        match = pattern.search(flat)
+        if match:
+            return _v5c_clean_value(match.group(1))
+    return ""
 
 
 def _v5c_segments(flat: str) -> Dict[str, str]:
@@ -1010,6 +1058,16 @@ def parse_v5c(text: str) -> Dict[str, str]:
         match = _V5C_VIN_SHAPE.search(flat.upper())
         if match:
             result["chassisNumber"] = match.group(1)
+    if not result["make"]:
+        result["make"] = _v5c_first_match(flat, _V5C_MAKE_FALLBACKS)
+    if not result["model"]:
+        result["model"] = _v5c_first_match(flat, _V5C_MODEL_FALLBACKS)
+    if not result["bodyType"]:
+        result["bodyType"] = _v5c_first_match(flat, _V5C_BODY_FALLBACKS)
+    if result["bodyType"]:
+        result["bodyType"] = _v5c_clean_value(
+            re.sub(r"\b(?:D\.?\s*X|DX|taxation\s+class)\b.*$", "", result["bodyType"], flags=re.I)
+        )
 
     match = _V5C_DOC_REF.search(flat) or _V5C_DOC_REF_SHAPE.search(flat)
     if match:
@@ -1537,6 +1595,7 @@ _INVOICE_GARAGE_NAME_WORD = re.compile(
     r"specialist|limited|ltd)\b",
     re.I,
 )
+_INVOICE_STREET_START = re.compile(r"\b\d{1,5}\s*(?:[-–]\s*\d{1,5})?\s+[A-Za-z]")
 
 # 10,000 miles between services — the default the user story specifies.
 SERVICE_INTERVAL_MILES = 10000
@@ -1547,24 +1606,43 @@ def _mileage_int(raw: str) -> Optional[int]:
     return int(digits) if digits else None
 
 
+def _service_invoice_name_candidate(raw: str) -> str:
+    candidate = raw.strip(" .:-")
+    if not candidate:
+        return ""
+    if _CERT_TITLE.match(candidate):
+        return ""
+    descriptor = _INVOICE_ADDRESS_DESCRIPTOR.search(candidate)
+    if descriptor:
+        candidate = candidate[:descriptor.start()].strip(" .,:-")
+    street_start = _INVOICE_STREET_START.search(candidate)
+    if street_start:
+        candidate = candidate[:street_start.start()].strip(" .,:-")
+    if not candidate or len(candidate) > 80:
+        return ""
+    if candidate[0].isdigit() or _find_postcode(candidate):
+        return ""
+    if _CERT_EMAIL.search(candidate) or _CERT_PHONE_LABELLED.search(candidate) or _CERT_PHONE.search(candidate):
+        return ""
+    if _INVOICE_ADDRESS_DESCRIPTOR.search(candidate):
+        return ""
+    if _INVOICE_GARAGE_NAME_WORD.search(candidate):
+        return re.sub(r"\s+", " ", candidate)
+    return ""
+
+
 def _service_invoice_garage_name(lines: List[str], contact: Dict[str, str]) -> str:
     """Prefer a real trading name over a descriptive testing-station line."""
     contact_name = (contact.get("name") or "").strip()
-    if contact_name and not _INVOICE_ADDRESS_DESCRIPTOR.search(contact_name):
-        return contact_name
 
-    for line in lines[:10]:
-        candidate = line.strip(" .:-")
-        if not candidate or len(candidate) > 80:
-            continue
-        if _CERT_TITLE.match(candidate) or _INVOICE_ADDRESS_DESCRIPTOR.search(candidate):
-            continue
-        if candidate[0].isdigit() or _find_postcode(candidate):
-            continue
-        if _CERT_EMAIL.search(candidate) or _CERT_PHONE_LABELLED.search(candidate) or _CERT_PHONE.search(candidate):
-            continue
-        if _INVOICE_GARAGE_NAME_WORD.search(candidate):
-            return re.sub(r"\s+", " ", candidate)
+    for line in lines[:15]:
+        candidate = _service_invoice_name_candidate(line)
+        if candidate:
+            return candidate
+
+    if contact_name and not _INVOICE_ADDRESS_DESCRIPTOR.search(contact_name):
+        cleaned = _service_invoice_name_candidate(contact_name)
+        return cleaned or contact_name
     return contact_name
 
 
@@ -1574,20 +1652,38 @@ def _service_invoice_address(lines: List[str], contact: Dict[str, str]) -> str:
     if not name:
         return contact.get("address", "")
     try:
-        start = next(i for i, ln in enumerate(lines) if name[:20].lower() in ln.lower()) + 1
+        start = next(i for i, ln in enumerate(lines) if name[:20].lower() in ln.lower())
     except StopIteration:
-        start = 1
+        start = 0
 
     parts: List[str] = []
     for line in lines[start:start + 10]:
         candidate = line.strip(" ,")
         if not candidate:
             continue
+        name_pos = candidate.lower().find(name.lower())
+        if name_pos >= 0:
+            candidate = candidate[name_pos + len(name):].strip(" ,")
+        if not candidate:
+            continue
         if not candidate[0].isdigit():
-            street_start = re.search(r"\b\d{1,5}\s*(?:[-–]\s*\d{1,5})?\s+[A-Za-z]", candidate)
+            street_start = _INVOICE_STREET_START.search(candidate)
             if street_start:
                 candidate = candidate[street_start.start():].strip(" ,")
-        if _CERT_EMAIL.search(candidate) or _CERT_PHONE_LABELLED.search(candidate) or _CERT_PHONE.search(candidate):
+        if not candidate:
+            continue
+        contact_markers = [
+            marker.start()
+            for marker in (_CERT_EMAIL.search(candidate), _CERT_PHONE_LABELLED.search(candidate))
+            if marker
+        ]
+        if contact_markers:
+            candidate = candidate[:min(contact_markers)].strip(" ,")
+        if not candidate:
+            if parts:
+                break
+            continue
+        if _CERT_PHONE.search(candidate):
             if parts:
                 break
             continue

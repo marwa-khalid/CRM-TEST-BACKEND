@@ -49,10 +49,17 @@ async def ocr_payment_receipt_route(file: UploadFile = File(...)):
 
 
 @router.post("/ocr/v5c")
-async def ocr_v5c_route(file: UploadFile = File(...)):
-    """OCR a V5C logbook into vehicle fields."""
+async def ocr_v5c_route(file: UploadFile = File(...), debug: bool = False):
+    """OCR a V5C logbook into vehicle fields.
+
+    Pass ?debug=true to also return the raw OCR text, which is useful when a
+    deployed environment reads a PDF differently from localhost.
+    """
     text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
-    return fleet_ocr.parse_v5c(text)
+    result = fleet_ocr.parse_v5c(text)
+    if debug:
+        result["_raw_text"] = text
+    return result
 
 
 @router.post("/ocr/plating-certificate")
@@ -70,7 +77,13 @@ async def ocr_mot_certificate_route(file: UploadFile = File(...)):
 
 
 @router.post("/ocr/service-invoice")
-async def ocr_service_invoice_route(file: UploadFile = File(...)):
-    """OCR a garage service invoice into garage + servicing fields."""
+async def ocr_service_invoice_route(file: UploadFile = File(...), debug: bool = False):
+    """OCR a garage service invoice into garage + servicing fields.
+
+    Pass ?debug=true to also return the raw OCR text for deployed OCR checks.
+    """
     text = fleet_ocr.file_to_text(await file.read(), file.filename or "")
-    return fleet_ocr.parse_service_invoice(text)
+    result = fleet_ocr.parse_service_invoice(text)
+    if debug:
+        result["_raw_text"] = text
+    return result
