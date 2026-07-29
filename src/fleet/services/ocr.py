@@ -1585,6 +1585,13 @@ _INVOICE_ADDRESS_STOP = re.compile(
     r"service\b|oil\b|total\b|vat\b|tel\b|fax\b)",
     re.I,
 )
+# Same boundary words but matched ANYWHERE in a line — the OCR often merges the
+# address and the "Statement / Invoice / Estimate … DATE … VEHICLE …" block onto
+# a single line, so the address must be cut at the first boundary word mid-line.
+_INVOICE_ADDRESS_TAIL_STOP = re.compile(
+    r"\b(?:statement|invoice|estimate|vehicle|registration|mileage|total|vat|tel|fax)\b",
+    re.I,
+)
 _INVOICE_ADDRESS_WORD = re.compile(
     r"\b(?:road|street|lane|avenue|drive|close|way|unit|yard|industrial|estate|park|"
     r"house|garage|birmingham|heath)\b",
@@ -1627,6 +1634,16 @@ def _service_invoice_name_candidate(raw: str) -> str:
     if _INVOICE_ADDRESS_DESCRIPTOR.search(candidate):
         return ""
     if _INVOICE_GARAGE_NAME_WORD.search(candidate):
+        # A bare section/part word on its own ("SERVICE", "MOT", "OIL") is a body
+        # line, not a trading name — a real garage name always has more than one
+        # word. Without this, a poorly-OCR'd letterhead falls through to the
+        # "SERVICE" line item and mislabels it as the garage name.
+        words = candidate.split()
+        if len(words) == 1 and words[0].lower() in {
+            "service", "services", "servicing", "mot", "oil", "parts",
+            "labour", "labor", "antifreeze", "filter",
+        }:
+            return ""
         return re.sub(r"\s+", " ", candidate)
     return ""
 
@@ -1672,6 +1689,18 @@ def _service_invoice_address(lines: List[str], contact: Dict[str, str]) -> str:
                 candidate = candidate[street_start.start():].strip(" ,")
         if not candidate:
             continue
+        # Cut at the first invoice-header word — the OCR often merges the address
+        # and the "Statement / Invoice / Estimate … DATE … VEHICLE …" block onto
+        # one line, and the anchored stop below only catches it at line start.
+        # Hitting that boundary also ends the address (break after this line).
+        tail = _INVOICE_ADDRESS_TAIL_STOP.search(candidate)
+        tail_hit = tail is not None
+        if tail:
+            candidate = candidate[:tail.start()].strip(" ,")
+        if not candidate:
+            if tail_hit and parts:
+                break
+            continue
         contact_markers = [
             marker.start()
             for marker in (_CERT_EMAIL.search(candidate), _CERT_PHONE_LABELLED.search(candidate))
@@ -1704,7 +1733,7 @@ def _service_invoice_address(lines: List[str], contact: Dict[str, str]) -> str:
         if not looks_like_address:
             continue
         parts.append(candidate)
-        if has_postcode:
+        if has_postcode or tail_hit:
             break
 
     if not parts:
