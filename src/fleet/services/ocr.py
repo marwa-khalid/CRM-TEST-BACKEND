@@ -1263,6 +1263,7 @@ _ADDRESS_LINE_NOISE = re.compile(
     r"^\s*(?:licensing\s+department|email|web|printed\s+by)\b|\b(?:metropolitan|borough\s+council)\b",
     re.I,
 )
+_PLATING_STREET_START = re.compile(r"\b\d{1,5}\s*(?:[-–]\s*\d{1,5})?\s+[A-Za-z]")
 
 
 def _clean_authority_name(name: str) -> str:
@@ -1281,6 +1282,9 @@ def _clean_plating_address(address: str) -> str:
     cleaned = re.sub(r"\bmetropolitan\b.*$", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\bborough\s+council\b.*$", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\blicensing\s+department\b.*?(?=\bthe\s+core\b|\bhomer\s+road\b|\d{1,5}\b)", "", cleaned, flags=re.I)
+    street_start = _PLATING_STREET_START.search(cleaned)
+    if street_start:
+        cleaned = cleaned[street_start.start():]
     cleaned = re.sub(r"\bpee\s+ta\b", "", cleaned, flags=re.I)
     cleaned = re.sub(r"[^\w\s,.\-&/]", " ", cleaned)
     cleaned = re.sub(r"[\s,]+", " ", cleaned).strip(" ,.-")
@@ -1600,6 +1604,10 @@ _INVOICE_ADDRESS_DESCRIPTOR = re.compile(
     r"\b(?:hackney\s+carriage|private\s+hire\s+taxi\s+testing\s+station|testing\s+station)\b",
     re.I,
 )
+_INVOICE_SECONDARY_DESCRIPTOR = re.compile(
+    r"\b(?:independent\s+mercedes\s+specialist)\b",
+    re.I,
+)
 _INVOICE_ADDRESS_STOP = re.compile(
     r"^(?:statement\b|invoice\b|estimate\b|date\b|vehicle\b|registration\b|mileage\b|"
     r"service\b|oil\b|total\b|vat\b|tel\b|fax\b)",
@@ -1642,6 +1650,9 @@ def _service_invoice_name_candidate(raw: str) -> str:
     descriptor = _INVOICE_ADDRESS_DESCRIPTOR.search(candidate)
     if descriptor:
         candidate = candidate[:descriptor.start()].strip(" .,:-")
+    secondary = _INVOICE_SECONDARY_DESCRIPTOR.search(candidate)
+    if secondary and secondary.start() > 0:
+        candidate = candidate[:secondary.start()].strip(" .,:-")
     street_start = _INVOICE_STREET_START.search(candidate)
     if street_start:
         candidate = candidate[:street_start.start()].strip(" .,:-")
@@ -1681,6 +1692,9 @@ def _service_invoice_relaxed_name(raw: str) -> str:
     descriptor = _INVOICE_ADDRESS_DESCRIPTOR.search(candidate)
     if descriptor:
         candidate = candidate[:descriptor.start()].strip(" .,:-")
+    secondary = _INVOICE_SECONDARY_DESCRIPTOR.search(candidate)
+    if secondary and secondary.start() > 0:
+        candidate = candidate[:secondary.start()].strip(" .,:-")
     street_start = _INVOICE_STREET_START.search(candidate)
     if street_start:
         candidate = candidate[:street_start.start()].strip(" .,:-")
@@ -1705,18 +1719,21 @@ def _service_invoice_garage_name(lines: List[str], contact: Dict[str, str]) -> s
     """Prefer a real trading name over a descriptive testing-station line."""
     contact_name = (contact.get("name") or "").strip()
 
-    # 1) A line that clearly names a trading entity (has a company word).
-    for line in lines[:15]:
-        candidate = _service_invoice_name_candidate(line)
-        if candidate:
-            return candidate
-
-    # 2) The first genuine letterhead line — recovers the trading name even when
-    #    OCR drops the company word, and sits above the "…Testing Station" line.
+    # 1) The first genuine letterhead line wins. Some invoices print a trading
+    #    name first ("Hadens Birmingham") and a service descriptor below it
+    #    ("Independent Mercedes Specialist"). The descriptor contains stronger
+    #    garage keywords, but the first heading is the actual garage name.
     for line in lines[:8]:
         relaxed = _service_invoice_relaxed_name(line)
         if relaxed:
             return relaxed
+
+    # 2) If the heading was too noisy, fall back to a line that clearly names a
+    #    trading entity (has a company word).
+    for line in lines[:15]:
+        candidate = _service_invoice_name_candidate(line)
+        if candidate:
+            return candidate
 
     # Never fall back to the descriptor ("…Testing Station") itself.
     if contact_name and not _INVOICE_ADDRESS_DESCRIPTOR.search(contact_name):
