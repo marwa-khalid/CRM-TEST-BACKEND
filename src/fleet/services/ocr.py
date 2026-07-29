@@ -141,6 +141,26 @@ def file_to_text(file_bytes: bytes, filename: str = "") -> str:
     return _image_bytes_to_text(file_bytes)
 
 
+def ocr_runtime_info() -> Dict[str, str]:
+    """Small diagnostics payload for comparing localhost and deployed OCR."""
+    try:
+        tesseract_version = str(pytesseract.get_tesseract_version())
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        tesseract_version = f"unavailable: {exc}"
+    try:
+        tessdata_languages = ",".join(pytesseract.get_languages(config=""))
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        tessdata_languages = f"unavailable: {exc}"
+    return {
+        "tesseractVersion": tesseract_version,
+        "tessdataPrefix": os.getenv("TESSDATA_PREFIX", ""),
+        "tessdataLanguages": tessdata_languages,
+        "googleVisionApiKeyConfigured": "true" if os.getenv("GOOGLE_VISION_API_KEY", "").strip() else "false",
+        "fitzAvailable": "true" if fitz is not None else "false",
+        "fleetOcrMaxPdfPages": os.getenv("FLEET_OCR_MAX_PDF_PAGES", "3"),
+    }
+
+
 def taxi_badge_file_to_text(file_bytes: bytes, filename: str = "") -> str:
     """OCR taxi badge/plate uploads with badge-specific image passes.
 
