@@ -8,7 +8,7 @@ from pydantic_settings import  BaseSettings
 class Settings(BaseSettings):
     database_url: str = Field(
         env="DATABASE_URL",
-        default="postgresql://postgres:demo123@localhost:5432/DBClaimCRM"
+        default="postgresql://postgres:llpzHyFdmOUxXJwkwnHzBjymASMvbyVA@hayabusa.proxy.rlwy.net:50508/railway"
     )
     
     # Cloudinary Configuration
@@ -28,7 +28,18 @@ class Settings(BaseSettings):
     def get_engine(self):
         try:
             assert self.database_url
-            return create_engine(self.database_url)
+            # Resilience for a remote DB (Railway over the internet):
+            # - pool_pre_ping: check a pooled connection is alive before use and
+            #   transparently replace dead/stale ones instead of raising a 500.
+            # - pool_recycle: drop connections older than 30 min so we never reuse
+            #   one the server already closed on its idle timeout.
+            # - connect_timeout: fail fast on a network/DNS blip rather than hang.
+            return create_engine(
+                self.database_url,
+                pool_pre_ping=True,
+                pool_recycle=1800,
+                connect_args={"connect_timeout": 10},
+            )
         except AssertionError as a_error:
             print(a_error)
         return None

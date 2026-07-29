@@ -223,6 +223,13 @@ def build_sale_documents_html(record: FleetVehicleRecord, show_print_button: boo
 </html>"""
 
 
+def _skyline_ref(record: FleetVehicleRecord) -> str:
+    """Our REF on the sale documents is the Skyline hire reference (SK-HR-####),
+    not the vehicle registration."""
+    hire_id = getattr(record, "hire_id", None)
+    return f"SK-HR-{hire_id:04d}" if hire_id else EM_DASH
+
+
 def build_sale_documents_docx(record: FleetVehicleRecord) -> bytes:
     """Release of Liability + Receipt of Sale as a real Word .docx.
 
@@ -289,10 +296,10 @@ def build_sale_documents_docx(record: FleetVehicleRecord) -> bytes:
             p.add_run().add_picture(str(DOCX_LOGO_PATH), width=Inches(1.2))
 
     def sign_pair():
-        para(f"NAME: (BLOCK CAPITALS) {DOTS_DOC}    DATE: {sign_stamp}", bold=True, size=8.5, space_after=12)
+        para(f"NAME: (BLOCK CAPITALS)    DATE: {sign_stamp}", bold=True, size=8.5, space_after=12)
         para("SIGNED:", bold=True, size=9, space_after=14)
         para(f"Witnessed on behalf of {SELLER_FULL_DOC} by (Seller)", bold=True, size=9, space_after=10)
-        para(f"NAME: (BLOCK CAPITALS) {DOTS_DOC}    DATE: {sign_stamp}", bold=True, size=8.5, space_after=12)
+        para(f"NAME: (BLOCK CAPITALS)    DATE: {sign_stamp}", bold=True, size=8.5, space_after=12)
         para("SIGNED:", bold=True, size=9, space_after=6)
 
     # ---- Page 1: Release of Liability ----
@@ -301,7 +308,7 @@ def build_sale_documents_docx(record: FleetVehicleRecord) -> bytes:
     for line in address_lines:
         para(line, space_after=0)
     para("", space_after=6)
-    para(f"Our REF: {reg}", space_after=0)
+    para(f"Our REF: {_skyline_ref(record)}", space_after=0)
     para(f"Salvage Vehicle Purchased: {salvage_vehicle}", space_after=8)
     para(f"Date: {sold_on}", space_after=0)
     para(f"Time: {time_now}", space_after=10)
