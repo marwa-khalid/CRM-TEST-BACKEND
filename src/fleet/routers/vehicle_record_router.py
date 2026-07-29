@@ -1,6 +1,6 @@
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
@@ -449,21 +449,48 @@ def preview_accounts_email_route(
     return AppointmentEmailPreviewResponse(to=to, subject=subject, body=body, html=html)
 
 
+_EMAIL_MAX_FILE_BYTES = 15 * 1024 * 1024
+_EMAIL_MAX_TOTAL_BYTES = 25 * 1024 * 1024
+_EMAIL_MAX_FILES = 10
+
+
 @router.post("/vehicle-record/{record_id}/sale/accounts-email")
-def send_accounts_email_route(
+async def send_accounts_email_route(
     record_id: int,
-    payload: AppointmentPassedEmailRequest,
+    to: str = Form(""),
+    cc: Optional[str] = Form(None),
+    subject: str = Form(""),
+    body: Optional[str] = Form(None),
+    files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
     user: dict = Depends(authenticate),
 ):
     record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
     default_subject, default_body = _accounts_email_content(record)
-    to = (payload.to or "").strip() or (user or {}).get("user_name") or fleet_email_service.FLEET_INBOX
-    subject = (payload.subject or "").strip() or default_subject
-    message = payload.body if payload.body is not None else default_body
+    to = (to or "").strip() or (user or {}).get("user_name") or fleet_email_service.FLEET_INBOX
+    subject = (subject or "").strip() or default_subject
+    message = body if body is not None else default_body
     html = _render_accounts_html(record, message)
-    result = fleet_email_service.send_email(to=to, subject=subject, html=html, cc=payload.cc)
+
+    if len(files) > _EMAIL_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Too many attachments (max {_EMAIL_MAX_FILES}).")
+    attachments = []
+    total = 0
+    for f in files:
+        content = await f.read()
+        if not content:
+            continue
+        if len(content) > _EMAIL_MAX_FILE_BYTES:
+            raise HTTPException(status_code=400, detail=f"{f.filename or 'Attachment'} exceeds the 15 MB limit.")
+        total += len(content)
+        if total > _EMAIL_MAX_TOTAL_BYTES:
+            raise HTTPException(status_code=400, detail="Attachments exceed the 25 MB total limit.")
+        attachments.append(fleet_email_service.build_attachment(f.filename, f.content_type, content))
+
+    result = fleet_email_service.send_email(
+        to=to, subject=subject, html=html, attachments=attachments, cc=cc
+    )
     if isinstance(result, dict) and result.get("status") == "failed":
         raise HTTPException(status_code=502, detail=result.get("detail") or "Email could not be sent.")
     return {"status": "sent", "to": to}

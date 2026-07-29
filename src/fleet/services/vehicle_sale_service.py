@@ -112,15 +112,15 @@ def build_sale_documents_html(record: FleetVehicleRecord, show_print_button: boo
 
     def _sign_pair() -> str:
         return f"""
-      <p class="sig"><strong>NAME: (BLOCK CAPITALS) {'.' * 82} &nbsp;&nbsp; DATE: {escape(sign_stamp)}</strong></p>
-      <p class="sig-spacer"><br/></p>
+      <p class="sig"><strong>NAME: (BLOCK CAPITALS) :</strong></p>
+      <p class="sig"><strong>DATE: {escape(sign_stamp)}</strong></p>
       <p class="sig"><strong>SIGNED:</strong></p>
-      <p class="sig-spacer"><br/></p>
+      <p class="signing-space"><br/></p>
       <p class="sig"><strong>Witnessed on behalf of {SELLER_FULL} by (Seller)</strong></p>
-      <p class="sig-spacer"><br/></p>
-      <p class="sig"><strong>NAME: (BLOCK CAPITALS) {'.' * 82} &nbsp;&nbsp; DATE: {escape(sign_stamp)}</strong></p>
-      <p class="sig-spacer"><br/></p>
-      <p class="sig"><strong>SIGNED:</strong></p>"""
+      <p class="sig"><strong>NAME: (BLOCK CAPITALS) :</strong></p>
+      <p class="sig"><strong>DATE: {escape(sign_stamp)}</strong></p>
+      <p class="sig"><strong>SIGNED:</strong></p>
+      <p class="signing-space"><br/></p>"""
 
     print_button = '<button class="screen-print" onclick="window.print()">Print</button>' if show_print_button else ""
 
@@ -138,8 +138,8 @@ def build_sale_documents_html(record: FleetVehicleRecord, show_print_button: boo
       .doc-header img{{width:150px;height:auto;display:inline-block}}
       .blank{{min-height:11px}}
       .letter-body{{text-align:justify}}
-      .sig{{font-size:9px;line-height:16px}}
-      .sig-spacer{{font-size:9px;line-height:16px;min-height:10px}}
+      .sig{{font-size:10px;line-height:18px;font-weight:bold;margin:0 0 8px 0}}
+      .signing-space{{font-size:10px;line-height:18px;min-height:72pt;margin:0}}
       .receipt-title{{font-size:14px;line-height:16px;font-weight:bold}}
       .receipt{{margin-top:132px}}
       table{{border-collapse:collapse;margin:16px 0 0 0;width:100%}}
@@ -296,11 +296,13 @@ def build_sale_documents_docx(record: FleetVehicleRecord) -> bytes:
             p.add_run().add_picture(str(DOCX_LOGO_PATH), width=Inches(1.2))
 
     def sign_pair():
-        para(f"NAME: (BLOCK CAPITALS)    DATE: {sign_stamp}", bold=True, size=8.5, space_after=12)
-        para("SIGNED:", bold=True, size=9, space_after=14)
-        para(f"Witnessed on behalf of {SELLER_FULL_DOC} by (Seller)", bold=True, size=9, space_after=10)
-        para(f"NAME: (BLOCK CAPITALS)    DATE: {sign_stamp}", bold=True, size=8.5, space_after=12)
-        para("SIGNED:", bold=True, size=9, space_after=6)
+        para("NAME: (BLOCK CAPITALS) :", bold=True, size=10, space_after=8)
+        para(f"DATE: {sign_stamp}", bold=True, size=10, space_after=8)
+        para("SIGNED:", bold=True, size=10, space_after=72)
+        para(f"Witnessed on behalf of {SELLER_FULL_DOC} by (Seller)", bold=True, size=10, space_after=8)
+        para("NAME: (BLOCK CAPITALS) :", bold=True, size=10, space_after=8)
+        para(f"DATE: {sign_stamp}", bold=True, size=10, space_after=8)
+        para("SIGNED:", bold=True, size=10, space_after=72)
 
     # ---- Page 1: Release of Liability ----
     logo()

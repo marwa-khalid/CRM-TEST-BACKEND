@@ -256,11 +256,7 @@ def send_whatsapp(
     if not normalized:
         return {"sent": False, "reason": "Missing or invalid UK mobile number"}
 
-    # Forced to Vonage for now — Meta Cloud API is not live yet. Restore the
-    # env-driven line below (and set WHATSAPP_PROVIDER=meta) when the Meta
-    # templates are approved.
-    provider = "vonage"
-    # provider = (os.getenv("WHATSAPP_PROVIDER") or "vonage").strip().lower()
+    provider = (os.getenv("WHATSAPP_PROVIDER") or "vonage").strip().lower()
 
     try:
         if provider in {"vonage", "nexmo"}:
