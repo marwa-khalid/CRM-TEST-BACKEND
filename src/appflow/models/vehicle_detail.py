@@ -32,9 +32,13 @@ class ThirdPartyVehicleResponse(ThirdPartyVehicleCreate):
 class BoroughCreate(BaseModel):
     borough_name: Optional[str] = None
     taxi_type_id: Optional[int] = None
+    taxi_type_id_2: Optional[int] = None
     client_badge_number: Optional[str] = None
+    client_badge_number_2: Optional[str] = None
     badge_expiration_date: Optional[date] = None
+    badge_expiration_date_2: Optional[date] = None
     vehicle_badge_number: Optional[str] = None
+    dual_badge: bool = False
     any_other_borough: bool = False
     other_borough_name: Optional[str] = None
 
@@ -65,6 +69,7 @@ class ClientVehicleCreate(BaseModel):
     vehicle_category: Optional[str] = None
     vehicle_status_id: Optional[int] = None
     borough: Optional[BoroughCreate] = None
+    borough2: Optional[BoroughCreate] = None
     damage_area: Optional[str] = None
     unrelated_damage: Optional[str] = None
     third_party_vehicles: List[ThirdPartyVehicleCreate] = Field(default_factory=list)
@@ -82,6 +87,7 @@ class ClientVehicleResponse(ClientVehicleCreate):
     tenant_id:int
     vehicle_status_id: Optional[int] = None
     borough: Optional[BoroughResponse] = None
+    borough2: Optional[BoroughResponse] = None
     damage_area: Optional[str] = None
     unrelated_damage: Optional[str] = None
     damage_diagram: Optional[dict] = None

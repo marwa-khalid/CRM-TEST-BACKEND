@@ -325,7 +325,7 @@ class TaxiType(BaseModel, AuditByMixin):
     is_active = Column(Boolean, nullable=True, default=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
 
-    boroughs = relationship("Borough", back_populates="taxi_type")
+    boroughs = relationship("Borough", foreign_keys="Borough.taxi_type_id", back_populates="taxi_type")
 
 class SalvageCategory(BaseModel, AuditByMixin):
     __tablename__ = "salvage_categories"
@@ -648,6 +648,7 @@ class ClientDetail(BaseModel, AuditByMixin):
     # Foreign Keys
     witness_independent = Column(Boolean, nullable=True, default=False)
     payment_benificiary = Column(String(200),nullable=True)
+    is_bailee_owner = Column(Boolean, nullable=True, default=False)
     claim_id = Column(Integer, ForeignKey("claims.id", ondelete="CASCADE"), nullable=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True)
     address_id = Column(Integer, ForeignKey("addresses.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -769,8 +770,23 @@ class VehicleDetail(BaseModel,AuditByMixin):
     transmission = relationship("Transmission", back_populates="client_vehicles")
     vehicle_status = relationship("VehicleStatus", back_populates="client_vehicles")
 
-    # Relationships - ONE client vehicle has ONE borough and MANY third-party vehicles
-    borough = relationship("Borough", back_populates="client_vehicle", uselist=False, cascade="all, delete-orphan")
+    # Relationships - a client vehicle has a primary borough and an optional
+    # secondary ("Any Other Borough") one, plus MANY third-party vehicles.
+    borough = relationship(
+        "Borough",
+        back_populates="client_vehicle",
+        primaryjoin="and_(VehicleDetail.id==Borough.client_vehicle_id, Borough.is_secondary.isnot(True))",
+        uselist=False,
+        cascade="all, delete-orphan",
+        overlaps="borough2",
+    )
+    borough2 = relationship(
+        "Borough",
+        primaryjoin="and_(VehicleDetail.id==Borough.client_vehicle_id, Borough.is_secondary.is_(True))",
+        uselist=False,
+        cascade="all, delete-orphan",
+        overlaps="borough,client_vehicle",
+    )
     third_party_vehicles = relationship("ThirdPartyVehicle", back_populates="client_vehicles",
                                         cascade="all, delete-orphan")
 
@@ -781,15 +797,20 @@ class Borough(BaseModel,AuditByMixin):
     client_vehicle_id = Column(Integer, ForeignKey("client_vehicles.id", ondelete="CASCADE"), nullable=True,index=True)
     borough_name = Column(String(200),nullable=True)
     taxi_type_id = Column(Integer, ForeignKey("taxi_types.id", ondelete="SET NULL"), nullable=True, index=True)
+    taxi_type_id_2 = Column(Integer, ForeignKey("taxi_types.id", ondelete="SET NULL"), nullable=True, index=True)
     client_badge_number = Column(String(200),nullable=True)
+    client_badge_number_2 = Column(String(200),nullable=True)
     badge_expiration_date = Column(Date,nullable=True)
+    badge_expiration_date_2 = Column(Date,nullable=True)
     vehicle_badge_number = Column(String(200),nullable=True)
+    dual_badge = Column(Boolean,nullable=True, default=False)
     any_other_borough = Column(Boolean,nullable=True, default=False)
     other_borough_name = Column(String(200), nullable=True)
+    is_secondary = Column(Boolean, nullable=True, default=False)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
 
     client_vehicle = relationship("VehicleDetail", back_populates="borough")
-    taxi_type = relationship("TaxiType", back_populates="boroughs")
+    taxi_type = relationship("TaxiType", foreign_keys=[taxi_type_id], back_populates="boroughs")
 
 class ThirdPartyVehicle(BaseModel,AuditByMixin):
     __tablename__ = "third_party_vehicles"

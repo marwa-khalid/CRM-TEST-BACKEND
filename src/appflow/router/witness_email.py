@@ -1023,7 +1023,7 @@ async def save_questionnaire_by_link(
 
     witness = db.execute(
         text("""
-            SELECT cd.first_name, cd.surname, a.email
+            SELECT cd.first_name, cd.surname, cd.address_id, a.email
             FROM client_details cd
             LEFT JOIN addresses a ON cd.address_id = a.id
             WHERE cd.claim_id = :cid
@@ -1039,6 +1039,24 @@ async def save_questionnaire_by_link(
     final_witness_name = witness_name or (
         f"{witness.first_name} {witness.surname}" if witness else "Witness"
     )
+
+    # Persist the postcode the witness entered on the questionnaire to their
+    # structured address record — otherwise it only lives in the generic
+    # `answers` rows and never reaches the witness's address.
+    witness_postcode = next(
+        (
+            str(item.get("answer") or "").strip()
+            for item in answers_data
+            if item.get("question") == "postcode"
+        ),
+        "",
+    )
+    if witness_postcode and witness and witness.address_id:
+        db.execute(
+            text("UPDATE addresses SET postcode = :pc WHERE id = :aid"),
+            {"pc": witness_postcode, "aid": witness.address_id},
+        )
+        db.commit()
 
     submission_time = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5174")

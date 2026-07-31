@@ -22,10 +22,12 @@ def normalize_claim_type(claim_type: str) -> str:
 
 def normalize_borough_payload(db: Session, borough_data: BoroughCreate) -> dict:
     data = borough_data.dict()
-    taxi_type_id = data.get("taxi_type_id")
 
-    if taxi_type_id and not db.query(TaxiType.id).filter(TaxiType.id == taxi_type_id).first():
-        data["taxi_type_id"] = None
+    # Null out any taxi type id (single or dual badge) that isn't a real row.
+    for key in ("taxi_type_id", "taxi_type_id_2"):
+        ttid = data.get(key)
+        if ttid and not db.query(TaxiType.id).filter(TaxiType.id == ttid).first():
+            data[key] = None
 
     return data
 
@@ -75,23 +77,31 @@ def create_client_vehicle(vehicle_data: ClientVehicleCreate, db: Session,request
     db.add(vehicle)
     db.flush()  # to get vehicle.id
 
-    # Borough
-    if vehicle_data.borough:
-        borough_data = normalize_borough_payload(db, vehicle_data.borough)
-        borough = Borough(
+    # Borough (primary + optional secondary "Any Other Borough")
+    def _build_borough(bdata: dict, is_secondary: bool) -> Borough:
+        return Borough(
             client_vehicle_id=vehicle.id,
-            borough_name=borough_data.get("borough_name"),
-            taxi_type_id=borough_data.get("taxi_type_id"),
-            client_badge_number=borough_data.get("client_badge_number"),
-            badge_expiration_date=borough_data.get("badge_expiration_date"),
-            vehicle_badge_number=borough_data.get("vehicle_badge_number"),
-            any_other_borough=borough_data.get("any_other_borough"),
-            other_borough_name=borough_data.get("other_borough_name"),
+            borough_name=bdata.get("borough_name"),
+            taxi_type_id=bdata.get("taxi_type_id"),
+            taxi_type_id_2=bdata.get("taxi_type_id_2"),
+            client_badge_number=bdata.get("client_badge_number"),
+            client_badge_number_2=bdata.get("client_badge_number_2"),
+            badge_expiration_date=bdata.get("badge_expiration_date"),
+            badge_expiration_date_2=bdata.get("badge_expiration_date_2"),
+            vehicle_badge_number=bdata.get("vehicle_badge_number"),
+            dual_badge=bdata.get("dual_badge"),
+            any_other_borough=bdata.get("any_other_borough"),
+            other_borough_name=bdata.get("other_borough_name"),
+            is_secondary=is_secondary,
             tenant_id=claim.tenant_id,
             created_by=current_user_id,
-            updated_by=current_user_id
+            updated_by=current_user_id,
         )
-        db.add(borough)
+
+    if vehicle_data.borough:
+        db.add(_build_borough(normalize_borough_payload(db, vehicle_data.borough), False))
+    if vehicle_data.borough2:
+        db.add(_build_borough(normalize_borough_payload(db, vehicle_data.borough2), True))
 
     # Third Party Vehicles
     for i, tp_data in enumerate(vehicle_data.third_party_vehicles, start=1):
@@ -175,6 +185,26 @@ def update_client_vehicle(claim_id: int, vehicle_data: ClientVehicleCreate, db: 
             borough.created_by = current_user_id
             borough.updated_by = current_user_id
             db.add(borough)
+
+    # ✅ secondary borough ("Any Other Borough")
+    if vehicle_data.borough2:
+        borough2_data = normalize_borough_payload(db, vehicle_data.borough2)
+        if vehicle.borough2:
+            vehicle.borough2.updated_by = current_user_id
+            for field, value in borough2_data.items():
+                if getattr(vehicle.borough2, field) != value:
+                    changed_fields.append(f"borough2.{field}")
+                setattr(vehicle.borough2, field, value)
+        else:
+            changed_fields.append("borough2")
+            b2 = Borough(client_vehicle_id=vehicle.id, is_secondary=True, **borough2_data)
+            b2.created_by = current_user_id
+            b2.updated_by = current_user_id
+            db.add(b2)
+    elif vehicle.borough2:
+        # "Any Other Borough" was turned off — drop the secondary borough.
+        changed_fields.append("borough2")
+        db.delete(vehicle.borough2)
 
     # ✅ third party detection
     existing_tp = db.query(ThirdPartyVehicle).filter(ThirdPartyVehicle.client_vehicle_id == vehicle.id,ThirdPartyVehicle.is_active == True).all()

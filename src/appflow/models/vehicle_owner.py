@@ -7,6 +7,7 @@ class VehicleOwnerBase(BaseModel):
     first_name: Optional[str] = None #Field(..., max_length=100)
     surname: Optional[str] = None #Field(..., max_length=100)
     payment_benificiary: Optional[str] = None
+    is_bailee_owner: Optional[bool] = None
 
     @field_validator("*", mode="before")
     def empty_to_none(cls, v):
