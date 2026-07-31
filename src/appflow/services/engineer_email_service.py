@@ -174,7 +174,7 @@ def send_engineer_instruction_email(
 
     year = claim.file_opened_at.strftime("%Y") if claim.file_opened_at else datetime.now().strftime("%Y")
     month = claim.file_opened_at.strftime("%m") if claim.file_opened_at else datetime.now().strftime("%m")
-    padded_id = str(claim.id).zfill(4)
+    padded_id = str(claim.id).zfill(5)
 
     our_reference = (
         f"{client.surname}-{year}{month}-{padded_id}"

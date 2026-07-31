@@ -1474,6 +1474,7 @@ class Task(BaseModel, AuditByMixin):
     description = Column(Text, nullable=True)
     assigned_user = Column(String(150), nullable=True)              # sample users for now (free text)
     department = Column(String(100), nullable=True)                 # Claims / Fleet / Recovery / Customer Service
+    module = Column(String(30), nullable=True, index=True)          # which app owns the list: skyline / vehicles / claims
     due_date = Column(Date, nullable=True)
     due_time = Column(String(20), nullable=True)                    # "16:00"
     priority = Column(String(20), nullable=True, default="Medium")  # Low / Medium / High
@@ -1544,6 +1545,7 @@ class CalendarEvent(BaseModel, AuditByMixin):
 
     assigned_users = Column(Text, nullable=True)    # comma-separated display names
     department = Column(String(100), nullable=True)
+    module = Column(String(30), nullable=True, index=True)  # which app owns the event: skyline / vehicles / claims
     description = Column(Text, nullable=True)
     location = Column(String(300), nullable=True)
 

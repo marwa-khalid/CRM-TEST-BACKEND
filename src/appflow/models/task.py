@@ -8,6 +8,7 @@ class TaskBase(BaseModel):
     description: Optional[str] = None
     assigned_user: Optional[str] = None
     department: Optional[str] = None
+    module: Optional[str] = None            # skyline / vehicles / claims — owning app
     due_date: Optional[date] = None
     due_time: Optional[str] = None
     priority: Optional[str] = "Medium"
@@ -28,6 +29,7 @@ class TaskUpdate(BaseModel):
     description: Optional[str] = None
     assigned_user: Optional[str] = None
     department: Optional[str] = None
+    module: Optional[str] = None
     due_date: Optional[date] = None
     due_time: Optional[str] = None
     priority: Optional[str] = None

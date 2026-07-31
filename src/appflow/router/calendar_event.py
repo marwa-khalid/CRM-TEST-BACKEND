@@ -24,12 +24,13 @@ def list_calendar_events(
     vehicle_registration: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    module: Optional[str] = Query(None),
     db: Session = Depends(get_session),
 ):
     return CalendarEventService.list_events(
         db, get_tenant_id(request), start, end, event_type, assigned_user,
         department, claim_reference, vehicle_registration, search, status,
-        current_user=actor_id(request),
+        current_user=actor_id(request), module=module,
     )
 
 

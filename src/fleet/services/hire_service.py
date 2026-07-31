@@ -126,6 +126,14 @@ def update_hire(db: Session, hire_id: int, tenant_id: Optional[int], actor_id: O
     hire.updated_by = actor_id
     db.commit()
     db.refresh(hire)
+    # Keep the weekly payment-due event on the Skyline calendar in step with the
+    # payment schedule (Payment Day / schedule end date / weekly amount).
+    if any(k in data for k in ("payment_day", "payment_hire_end_date", "weekly_hire_payment")):
+        from fleet.services import skyline_reminder_service
+        try:
+            skyline_reminder_service.sync_payment_event(db, hire, actor_id)
+        except Exception:
+            pass
     return hire
 
 

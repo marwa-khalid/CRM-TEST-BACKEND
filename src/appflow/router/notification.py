@@ -23,6 +23,12 @@ def list_notifications(db: Session = Depends(get_session), current_user=Depends(
         process_fleet_reminders(db)
     except Exception:
         db.rollback()
+    # Skyline hire-side reminders (weekly payment due / PCN deadlines + reminders).
+    try:
+        from fleet.services.skyline_reminder_service import process_skyline_reminders
+        process_skyline_reminders(db)
+    except Exception:
+        db.rollback()
     return list_for_user(db, current_user)
 
 

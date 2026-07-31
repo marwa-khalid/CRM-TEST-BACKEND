@@ -56,7 +56,10 @@ def upsert_vehicle_register(db: Session, data: dict) -> FleetVehicleRegister:
             make=data.get("make") or "",
             model=data.get("model") or "",
             transmission=data.get("transmission") or None,
-            is_active=False,
+            # is_active is the shared Claims⇄Skyline on-hire flag. Honour it when the
+            # caller sends it (Claims toggles availability through this endpoint);
+            # existing Fleet make/model sync calls omit it and default to free.
+            is_active=bool(data.get("is_active", False)),
         )
         db.add(row)
     else:
@@ -67,6 +70,8 @@ def upsert_vehicle_register(db: Session, data: dict) -> FleetVehicleRegister:
             row.model = data.get("model") or ""
         if "transmission" in data:
             row.transmission = data.get("transmission") or None
+        if "is_active" in data:
+            row.is_active = bool(data.get("is_active"))
 
     db.commit()
     db.refresh(row)

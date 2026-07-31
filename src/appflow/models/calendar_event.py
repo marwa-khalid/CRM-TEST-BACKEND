@@ -13,6 +13,7 @@ class CalendarEventIn(BaseModel):
     end_time: Optional[str] = None
     assigned_users: Optional[List[str]] = None
     department: Optional[str] = None
+    module: Optional[str] = None            # skyline / vehicles / claims — owning app
     description: Optional[str] = None
     location: Optional[str] = None
     reminder: Optional[str] = None

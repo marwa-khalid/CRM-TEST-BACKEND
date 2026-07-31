@@ -298,6 +298,9 @@ class FleetVehicleRegisterUpsert(BaseModel):
     make: Optional[str] = None
     model: Optional[str] = None
     transmission: Optional[str] = None
+    # Shared Claims⇄Skyline on-hire flag. Optional so existing make/model sync
+    # callers (which omit it) leave availability untouched via exclude_unset.
+    is_active: Optional[bool] = None
 
 
 class PcnUpdate(BaseModel):

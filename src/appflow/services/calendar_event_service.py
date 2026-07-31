@@ -109,6 +109,7 @@ def _to_out(db: Session, ev: CalendarEvent, with_context: bool = False) -> dict:
         "end_time": ev.end_time,
         "assigned_users": _split(ev.assigned_users),
         "department": ev.department,
+        "module": ev.module,
         "description": ev.description,
         "location": ev.location,
         "reminder": ev.reminder,
@@ -237,6 +238,7 @@ class CalendarEventService:
         department: Optional[str] = None, claim_reference: Optional[str] = None,
         vehicle_registration: Optional[str] = None, search: Optional[str] = None,
         status_filter: Optional[str] = None, current_user=None,
+        module: Optional[str] = None,
     ):
         q = CalendarEventService._base(db, tenant_id)
         # User-specific: each user only sees events they created or are assigned to.
@@ -253,6 +255,12 @@ class CalendarEventService:
             q = q.filter(CalendarEvent.event_type.in_([s.strip() for s in event_type.split(",") if s.strip()]))
         if department:
             q = q.filter(CalendarEvent.department.in_([s.strip() for s in department.split(",") if s.strip()]))
+        # Module scopes the calendar to the owning app (skyline / vehicles). Exact
+        # match keeps the apps separate — Claims events (module NULL) never surface
+        # in the Skyline or Vehicle Management calendars.
+        if module:
+            mods = [s.strip() for s in module.split(",") if s.strip()]
+            q = q.filter(CalendarEvent.module.in_(mods))
         if assigned_user:
             terms = [s.strip() for s in assigned_user.split(",") if s.strip()]
             if terms:

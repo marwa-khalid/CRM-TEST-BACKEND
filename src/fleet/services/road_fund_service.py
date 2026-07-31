@@ -84,6 +84,7 @@ def sync_expiry_and_event(
             f"Last renewed on {renewed.strftime('%d/%m/%Y')}."
         ),
         vehicle_registration=(record.registration_number or None),
+        module="vehicles",  # vehicle expiries belong to Vehicle Management
         source="system",
         source_type=EVENT_SOURCE_TYPE,
         source_ref_id=record.id,

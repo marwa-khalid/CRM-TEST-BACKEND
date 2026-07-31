@@ -55,6 +55,12 @@ def update_pcn(
     pcn.updated_by = actor_id
     db.commit()
     db.refresh(pcn)
+    # Surface the PCN response deadline on the Skyline calendar.
+    from fleet.services import skyline_reminder_service
+    try:
+        skyline_reminder_service.sync_pcn_events(db, pcn, actor_id)
+    except Exception:
+        pass
     return pcn
 
 
@@ -185,6 +191,12 @@ def upsert_pcn_reminder(
 
     db.commit()
     db.refresh(reminder)
+    # Surface this PCN reminder on the Skyline calendar.
+    from fleet.services import skyline_reminder_service
+    try:
+        skyline_reminder_service.sync_pcn_events(db, pcn, actor_id)
+    except Exception:
+        pass
     return reminder
 
 

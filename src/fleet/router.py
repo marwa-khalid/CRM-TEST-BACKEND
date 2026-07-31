@@ -13,7 +13,6 @@ from fleet.routers.map_router import router as map_router
 from fleet.routers.ocr_router import router as ocr_router
 from fleet.routers.payment_router import router as payment_router
 from fleet.routers.pcn_router import router as pcn_router
-from fleet.routers.vehicle_record_router import router as vehicle_record_router
 from fleet.routers.whatsapp_router import router as whatsapp_router
 from fleet.routers.vehicle_router import router as vehicle_router
 
@@ -29,5 +28,4 @@ fleet_router.include_router(generated_document_router)
 fleet_router.include_router(payment_router)
 fleet_router.include_router(email_router)
 fleet_router.include_router(pcn_router)
-fleet_router.include_router(vehicle_record_router)
 fleet_router.include_router(whatsapp_router)

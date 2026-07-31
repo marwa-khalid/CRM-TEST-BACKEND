@@ -4,25 +4,13 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from fleet.deps import actor_id, get_session, get_tenant_id
-from fleet.models.schemas import FleetVehicleRegisterResponse, FleetVehicleRegisterUpsert, VehicleResponse, VehicleUpdate
+from fleet.models.schemas import VehicleResponse, VehicleUpdate
 from fleet.services import vehicle_service
 
+# The shared vehicle register endpoints moved to the Vehicle Management module
+# (src/vehicles, served under /vehicles). This router now owns only a hire's own
+# vehicle cards (/hire/{hire_id}/vehicles), which stay a Fleet concern.
 router = APIRouter()
-
-
-@router.get("/vehicle-register", response_model=List[FleetVehicleRegisterResponse])
-def list_vehicle_register_route(
-    db: Session = Depends(get_session),
-):
-    return vehicle_service.list_vehicle_register(db)
-
-
-@router.post("/vehicle-register", response_model=FleetVehicleRegisterResponse)
-def upsert_vehicle_register_route(
-    payload: FleetVehicleRegisterUpsert,
-    db: Session = Depends(get_session),
-):
-    return vehicle_service.upsert_vehicle_register(db, payload.model_dump(exclude_unset=True))
 
 
 @router.post("/hire/{hire_id}/vehicles", response_model=VehicleResponse)

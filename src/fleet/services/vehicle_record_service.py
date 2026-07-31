@@ -142,6 +142,25 @@ def update_vehicle_record(
     if "road_tax_renewed_on" in payload:
         from fleet.services import road_fund_service
         record = road_fund_service.sync_expiry_and_event(db, record, actor)
+    # Keep the shared vehicle register (the source for the Claims & Skyline hire
+    # dropdowns) in step with the registered vehicle's identity fields.
+    if (
+        any(k in payload for k in ("registration_number", "make", "model", "transmission"))
+        and record.registration_number
+    ):
+        from fleet.services import vehicle_service
+        try:
+            vehicle_service.upsert_vehicle_register(
+                db,
+                {
+                    "registration_number": record.registration_number,
+                    "make": record.make,
+                    "model": record.model,
+                    "transmission": record.transmission,
+                },
+            )
+        except Exception:
+            pass
     return _attach_mileage(db, record)
 
 

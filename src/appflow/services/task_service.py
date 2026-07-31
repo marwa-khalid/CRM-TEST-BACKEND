@@ -60,6 +60,8 @@ def _notify_task_assigned(db: Session, task: Task, current_user, title: str = "N
     # includes them (and the Claims bell excludes them) on that marker, while the
     # tab stays Tasks / High Priority so they land in the right tab, not "Fleet".
     is_fleet = (getattr(task, "department", "") or "").strip().lower() == "fleet"
+    # A vehicle-module task routes to the Vehicle Management notification feed.
+    is_vehicles = (getattr(task, "module", "") or "").strip().lower() == "vehicles"
     ref = f" ({task.claim_reference})" if task.claim_reference else ""
     suffix = f" Reason: {reason}" if reason else ""
     safe_notify(
@@ -67,7 +69,7 @@ def _notify_task_assigned(db: Session, task: Task, current_user, title: str = "N
         recipient_user_id=recipient_user_id,
         tenant_id=tenant_id,
         actor_user_id=current_user,
-        category="Fleet" if is_fleet else ("High Priority" if is_high else "Task"),
+        category="Vehicles" if is_vehicles else ("Fleet" if is_fleet else ("High Priority" if is_high else "Task")),
         tab="High Priority" if is_high else "Tasks",
         title=title,
         description=f"{actor_name} assigned you a task: {task.title}{ref}.{suffix}",
@@ -150,6 +152,7 @@ class TaskService:
         status: Optional[str] = None,
         priority: Optional[str] = None,
         department: Optional[str] = None,
+        module: Optional[str] = None,
         assigned_user: Optional[str] = None,
         claim_reference: Optional[str] = None,
         vehicle_registration: Optional[str] = None,
@@ -220,6 +223,11 @@ class TaskService:
             q = q.filter(Task.priority.in_(_split(priority)))
         if department:
             q = q.filter(Task.department.in_(_split(department)))
+        # Module scopes the list to the owning app (skyline / vehicles). Exact
+        # match keeps the three apps cleanly separate — Claims tasks (module NULL)
+        # never surface in the Skyline or Vehicle Management lists.
+        if module:
+            q = q.filter(Task.module.in_(_split(module)))
         if assigned_user:
             q = q.filter(Task.assigned_user.in_(_split(assigned_user)))
         if claim_reference:

@@ -91,6 +91,7 @@ def sync_expiry_event(
             end_date=expiry,
             description=description,
             vehicle_registration=(registration or None),
+            module="vehicles",  # vehicle expiries belong to Vehicle Management
             source="system",
             source_type=source_type,
             source_ref_id=source_ref_id,
@@ -159,8 +160,8 @@ def _fire(
         db,
         recipient_user_id=recipient,
         tenant_id=record.tenant_id,
-        category="Fleet",
-        tab="Fleet",
+        category="Vehicles",  # vehicle expiries → Vehicle Management notification feed
+        tab="Vehicles",
         title=title,
         description=description,
     )

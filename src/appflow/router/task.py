@@ -21,6 +21,7 @@ def list_tasks(
     status: Optional[str] = None,
     priority: Optional[str] = None,
     department: Optional[str] = None,
+    module: Optional[str] = None,
     assigned_user: Optional[str] = None,
     claim_reference: Optional[str] = None,
     vehicle_registration: Optional[str] = None,
@@ -38,7 +39,7 @@ def list_tasks(
     # cards, which are a system-wide overview); otherwise tasks are scoped to the
     # logged-in user (the Task Management list).
     return TaskService.list_tasks(
-        db, tenant_id, search, status, priority, department, assigned_user,
+        db, tenant_id, search, status, priority, department, module, assigned_user,
         claim_reference, vehicle_registration, due_from, due_to, page, page_size,
         exclude_overdue=exclude_overdue,
         current_user_id=None if all_users else current_user,
