@@ -127,7 +127,7 @@ def create_claim(db: Session, payload: Dict[str, Any], current_user_id: int, ten
     db.refresh(claim)
     # claim.labels = _labels_bundle(claim)  # type: ignore[attr-defined]
     current_yyyymm = datetime.now().strftime("%Y%m")
-    padded_claim_id = str(claim.id).zfill(5)
+    padded_claim_id = str(claim.id).zfill(4)
     HistoryActivityService.create_activity(
         db=db,
         claim_id=claim.id,
@@ -298,7 +298,7 @@ def update_claim(db: Session, claim_id: int,user_id: int,tenant_id: int, payload
     if changed_fields:
         file_path = ", ".join(changed_fields)
         current_yyyymm = datetime.now().strftime("%Y%m")
-        padded_claim_id = str(claim.id).zfill(5)
+        padded_claim_id = str(claim.id).zfill(4)
         HistoryActivityService.create_activity(
             db=db,
             claim_id=claim.id,
@@ -686,7 +686,7 @@ def list_claim_detail(tenant_id :int , db: Session):
 
         year = claim.file_opened_at.strftime("%Y") if claim.file_opened_at else datetime.now().strftime("%Y")
         month = claim.file_opened_at.strftime("%m") if claim.file_opened_at else datetime.now().strftime("%m")
-        padded_id = str(claim.id).zfill(5)
+        padded_id = str(claim.id).zfill(4)
         surname = client.surname if client else None
         our_reference = f"{surname}-{year}{month}-{padded_id}"
 

@@ -112,7 +112,7 @@ class HistoryActivityService:
                     detail=f"File not found on server: {file_path}"
                 )
 
-        claim_number = str(record.claim_id).zfill(5)
+        claim_number = str(record.claim_id).zfill(4)
         original_name = os.path.basename(file_path)
         download_name = f"ClaimFile-{claim_number}-{original_name}"
 

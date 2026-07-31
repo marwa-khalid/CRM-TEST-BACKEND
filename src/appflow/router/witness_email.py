@@ -967,7 +967,7 @@ async def save_questionnaire_by_link(
 
     year = claim.file_opened_at.strftime("%Y") if claim.file_opened_at else datetime.now().strftime("%Y")
     month = claim.file_opened_at.strftime("%m") if claim.file_opened_at else datetime.now().strftime("%m")
-    padded_id = str(claim.id).zfill(5)
+    padded_id = str(claim.id).zfill(4)
     case_reference = f"{claim.client_surname}-{year}{month}-{padded_id}"
     handler_name = claim.handler_name or "Claim Handler"
 

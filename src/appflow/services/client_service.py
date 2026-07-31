@@ -73,7 +73,7 @@ def create_client_service(request: Request, client: ClientDetailIn, db: Session,
     db.refresh(db_client)
     # reference = build_case_reference(claim.id,db)
     current_yyyymm = datetime.now().strftime("%Y%m")
-    padded_claim_id = str(claim.id).zfill(5)
+    padded_claim_id = str(claim.id).zfill(4)
     HistoryActivityService.create_activity(
         db=db,
         claim_id=db_client.claim_id,
@@ -206,7 +206,7 @@ def update_client_service(claim_id: int, request: Request, client_data: ClientDe
     db.refresh(db_client)
     # reference = build_case_reference(claim.id, db)
     current_yyyymm = datetime.now().strftime("%Y%m")
-    padded_claim_id = str(claim.id).zfill(5)
+    padded_claim_id = str(claim.id).zfill(4)
     if changed_fields:
         HistoryActivityService.create_activity(
             db=db,
@@ -285,7 +285,7 @@ def prepare_cil_agreement_letter(claim_id: int, db: Session) -> bytes:
 
     year = claim.file_opened_at.strftime("%Y") if claim.file_opened_at else datetime.now().strftime("%Y")
     month = claim.file_opened_at.strftime("%m") if claim.file_opened_at else datetime.now().strftime("%m")
-    padded_id = str(claim.id).zfill(5)
+    padded_id = str(claim.id).zfill(4)
     our_reference = f"{client.surname}-{year}{month}-{padded_id}" if client else f"{year}{month}-{padded_id}"
 
     # Prepare template placeholders
@@ -321,7 +321,7 @@ def prepare_send_cil_to_client(claim_id: int, db: Session) -> bytes:
 
     year = claim.file_opened_at.strftime("%Y") if claim.file_opened_at else datetime.now().strftime("%Y")
     month = claim.file_opened_at.strftime("%m") if claim.file_opened_at else datetime.now().strftime("%m")
-    padded_id = str(claim.id).zfill(5)
+    padded_id = str(claim.id).zfill(4)
     our_reference = f"{client.surname}-{year}{month}-{padded_id}" if client else f"{year}{month}-{padded_id}"
 
     # Prepare template placeholders
@@ -367,7 +367,7 @@ def send_vulnerable_notify_manager(claim_id: int, db,current_user:int,tenant_id:
     client_name = f"{client.first_name} {client.surname}".strip() or "Client" if client else ""
     year = claim.file_opened_at.strftime("%Y") if claim.file_opened_at else datetime.now().strftime("%Y")
     month = claim.file_opened_at.strftime("%m") if claim.file_opened_at else datetime.now().strftime("%m")
-    padded_id = str(claim.id).zfill(5)
+    padded_id = str(claim.id).zfill(4)
     our_reference = f"{client.surname}-{year}{month}-{padded_id}" if client else f"{year}{month}-{padded_id}"
     Date = datetime.now().strftime("%d-%m-%y")
 
@@ -457,7 +457,7 @@ def send_vulnerable_notify_manager(claim_id: int, db,current_user:int,tenant_id:
         sendgrid_status = response.status_code
     # reference = build_case_reference(claim_id,db)
     current_yyyymm = datetime.now().strftime("%Y%m")
-    padded_claim_id = str(claim.id).zfill(5)
+    padded_claim_id = str(claim.id).zfill(4)
     HistoryActivityService.create_activity(
         db=db,
         claim_id=claim_id,
@@ -499,7 +499,7 @@ def build_vulnerable_email_data(claim_id: int, db):
 
     year = opened_at.strftime("%Y") if opened_at else ""
     month = opened_at.strftime("%m") if opened_at else ""
-    padded_id = str(claim.id).zfill(5) if claim and claim.id else ""
+    padded_id = str(claim.id).zfill(4) if claim and claim.id else ""
 
     reference = (
         f"{client_last}-{year}{month}-{padded_id}" if client_last else f"{year}{month}-{padded_id}"

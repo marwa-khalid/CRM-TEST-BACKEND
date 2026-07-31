@@ -363,7 +363,7 @@ class PanelSolicitorEmailService:
     def _build_case_reference(self, claim) -> str:
         year = claim.file_opened_at.strftime("%Y")
         month = claim.file_opened_at.strftime("%m")
-        padded_id = str(claim.id).zfill(5)
+        padded_id = str(claim.id).zfill(4)
         return f"{claim.client_surname}-{year}{month}-{padded_id}"
 
     def send_email(self, claim_id: int, solicitor_email: str, company_name: str,current_user=int):

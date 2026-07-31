@@ -115,7 +115,7 @@ class ReferrerService:
             db.refresh(new_referrer)
             # reference = build_case_reference(claim.id,db)
             current_yyyymm = datetime.now().strftime("%Y%m")
-            padded_claim_id = str(claim.id).zfill(5)
+            padded_claim_id = str(claim.id).zfill(4)
             HistoryActivityService.create_activity(
                 db=db,
                 claim_id=claim.id,
@@ -228,7 +228,7 @@ class ReferrerService:
             # Now file_path will always be defined since we're inside the if block
             file_path = ", ".join(changed_labels)
             current_yyyymm = datetime.now().strftime("%Y%m")
-            padded_claim_id = str(claim.id).zfill(5)
+            padded_claim_id = str(claim.id).zfill(4)
             HistoryActivityService.create_activity(
                 db=db,
                 claim_id=claim.id,

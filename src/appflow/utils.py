@@ -44,7 +44,7 @@ def build_case_reference(claim,db) -> str:
         return str(claim)
     year = claim.file_opened_at.strftime("%Y")
     month = claim.file_opened_at.strftime("%m")
-    padded_id = str(claim.id).zfill(5)
+    padded_id = str(claim.id).zfill(4)
     client = (
         db.query(ClientDetail)
         .filter(
