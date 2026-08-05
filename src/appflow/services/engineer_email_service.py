@@ -102,7 +102,8 @@ def send_engineer_instruction_email(
     data,
     db,
     current_user,
-    tenant_id
+    tenant_id,
+    preview: bool = False,
 ):
     client = db.query(ClientDetail).filter(
         ClientDetail.claim_id == claim_id,
@@ -282,6 +283,11 @@ def send_engineer_instruction_email(
 
     subject = f"Instructing Engineer - {our_reference}"
 
+    # An edited subject from the preview modal overrides the generated one for
+    # this send only.
+    if getattr(data, "subject_override", None):
+        subject = data.subject_override
+
     handler_name = email_details["${HandlerLabel}"] or "Claims Handler"
 
     # Body mirrors the instruct-engineer template: a short cover note; the full
@@ -360,6 +366,33 @@ def send_engineer_instruction_email(
     </html>
     """
 
+    # An edited copy from the preview modal overrides the generated body for this
+    # one send — the template itself is regenerated fresh next time, so it's never
+    # altered.
+    if getattr(data, "html_override", None):
+        body = data.html_override
+
+    attachments = [{
+        "name": "Engineer Instruction & Letter.docx",
+        "content_bytes": encoded_file,
+        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }]
+
+    # Preview mode: return the fully-rendered email (recipient / subject / body /
+    # attachment names) for the modal to show + edit. Nothing is sent.
+    if preview:
+        return {
+            "to": getattr(data, "engineer_email", "") or "",
+            "subject": subject,
+            "html": body,
+            # Include the base64 content so the modal can open the attachment in a
+            # new tab without a second round-trip.
+            "attachments": [
+                {"name": a["name"], "content_b64": a["content_bytes"], "content_type": a["content_type"]}
+                for a in attachments
+            ],
+        }
+
     # Graph-first so it reaches Outlook (logo auto-attached via cid:companylogo);
     # SendGrid fallback. The engineer document travels as a regular attachment.
     from appflow.services.email_delivery import send_email as deliver_email
@@ -372,11 +405,8 @@ def send_engineer_instruction_email(
             to=recipient,
             subject=subject,
             html=body,
-            attachments=[{
-                "name": "Engineer Instruction & Letter.docx",
-                "content_bytes": encoded_file,
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            }],
+            cc=getattr(data, "cc_override", None) or None,
+            attachments=attachments,
         )
 
         reference = build_case_reference(claim_id, db)

@@ -56,3 +56,9 @@ class EngineerEmailRequest(BaseModel):
     engineer_address: str
     engineer_postcode: str
     current_location: str
+    # When the user edits the email in the preview modal, the edited HTML / subject
+    # are sent back here and used verbatim for this one send (the generated
+    # template is left untouched).
+    html_override: Optional[str] = None
+    subject_override: Optional[str] = None
+    cc_override: Optional[str] = None

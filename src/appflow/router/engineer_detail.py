@@ -130,3 +130,20 @@ def send_instruction(
         data=data,
         db=db,current_user=current_user,tenant_id=tenant_id
     )
+
+
+@engineer_router.post("/instruction-preview/{claim_id}")
+def instruction_preview(
+        claim_id: int,
+        data: EngineerEmailRequest,
+        db: Session = Depends(get_session),
+        current_user: int = Depends(actor_id), tenant_id: int = Depends(get_tenant_id)
+):
+    """Render the instruct-engineer email (recipient / subject / body / attachment
+    names) for the editable preview modal — nothing is sent."""
+    return send_engineer_instruction_email(
+        claim_id=claim_id,
+        data=data,
+        db=db, current_user=current_user, tenant_id=tenant_id,
+        preview=True,
+    )
