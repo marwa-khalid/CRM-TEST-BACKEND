@@ -51,9 +51,10 @@ def _count_between(dates: List[date], start: date, end: date) -> int:
     return sum(1 for d in dates if d and start <= d < end)
 
 
-def _hire_start_dates(db: Session, tenant_id: Optional[int]) -> List[date]:
+def _hire_start_dates(db: Session, tenant_id: Optional[int], status: Optional[str] = None) -> List[date]:
     """Every fleet vehicle-hire start date for the tenant (one row per hired
-    vehicle). Soft-deleted hire files and null start dates are excluded."""
+    vehicle). Soft-deleted hire files and null start dates are excluded.
+    `status` (on_hire | off_hire) optionally filters by the vehicle-hire status."""
     query = (
         db.query(FleetHireVehicle.hire_start_date)
         .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
@@ -62,6 +63,8 @@ def _hire_start_dates(db: Session, tenant_id: Optional[int]) -> List[date]:
     )
     if tenant_id is not None:
         query = query.filter(FleetHire.tenant_id == tenant_id)
+    if status:
+        query = query.filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == status.strip().lower())
     return [row[0] for row in query.all()]
 
 
@@ -72,6 +75,7 @@ def get_hire_trend(
     mode: str = "",
     start: Optional[str] = None,
     end: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> dict:
     """Vehicle-hire counts for the Fleet dashboard's Hire Trend graph.
 
@@ -83,7 +87,7 @@ def get_hire_trend(
     period = (period or "WTD").upper()
     mode = (mode or "").upper()
     today = date.today()
-    dates = _hire_start_dates(db, tenant_id)
+    dates = _hire_start_dates(db, tenant_id, status)
 
     # ── Comparison modes: two totals, previous vs current ─────────────────────
     if mode == "MOM":
@@ -406,7 +410,7 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
                 rows[bucket].append([reg or "—", e.strftime("%d %b %Y"), list(_remaining_label(e, today))])
         cards[key] = {
             "tabs": {k: len(v) for k, v in rows.items()},
-            "rows": {k: v[:8] for k, v in rows.items()},
+            "rows": {k: v[:50] for k, v in rows.items()},  # full set for the slider; card shows first 5
         }
     return cards
 

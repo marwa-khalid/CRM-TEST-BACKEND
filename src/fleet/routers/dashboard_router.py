@@ -16,14 +16,16 @@ def hire_trend_route(
     mode: str = "",
     start: Optional[str] = None,
     end: Optional[str] = None,
+    status: Optional[str] = None,
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
     """Vehicle-hire counts for the Fleet dashboard's Hire Trend chart.
 
     ``period``: WTD | MTD | YTD | CUSTOM. ``mode``: YOY | MOM (two-bar compare).
+    ``status``: on_hire | off_hire (optional filter).
     """
-    return dashboard_service.get_hire_trend(db, tenant_id, period=period, mode=mode, start=start, end=end)
+    return dashboard_service.get_hire_trend(db, tenant_id, period=period, mode=mode, start=start, end=end, status=status)
 
 
 @router.get("/dashboard/stats")
