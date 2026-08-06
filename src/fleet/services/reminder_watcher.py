@@ -15,13 +15,18 @@ Each fires once a day inside its window; a date-stamp column per expiry keeps
 that idempotent, so the watcher is safe to call on every notifications poll.
 """
 import logging
-from datetime import date, timedelta
+import re
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from fleet.deps import CalendarEvent, create_notification
-from fleet.models.tables import FleetVehicleLicensingAuthority, FleetVehicleRecord
+from fleet.models.tables import (
+    FleetVehicleLicensingAuthority,
+    FleetVehicleRecord,
+    FleetVehicleService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,10 @@ REMINDER_WINDOW_DAYS = 7
 ROAD_TAX_EVENT = "road_fund_licence_expiry"
 PLATING_EVENT = "plating_expiry"
 MOT_EVENT = "mot_expiry"
+SERVICE_DUE_EVENT = "service_due_mileage"
+
+# Warn when an in-use vehicle is within this many miles of its next service.
+MILEAGE_REMINDER_THRESHOLD_MILES = 10000
 
 
 def _vehicle_label(record: FleetVehicleRecord) -> str:
@@ -253,6 +262,131 @@ def process_fleet_reminders(db: Session, today: Optional[date] = None) -> Dict[s
 
     if any(v for k, v in stats.items() if k != "no_recipient"):
         logger.info("Fleet expiry reminders for %s: %s", today, stats)
+    return stats
+
+
+def _to_int_miles(value) -> Optional[int]:
+    """Mileage is stored as free text ('54,210', '54210 mi') — pull the digits."""
+    if value is None:
+        return None
+    digits = re.sub(r"[^\d]", "", str(value))
+    return int(digits) if digits else None
+
+
+def _already_notified_today(db: Session, recipient: int, title: str, today: date) -> bool:
+    from libdata.models.tables import Notification
+    start = datetime.combine(today, datetime.min.time())
+    return (
+        db.query(Notification)
+        .filter(Notification.recipient_user_id == recipient)
+        .filter(Notification.title == title)
+        .filter(Notification.created_at >= start)
+        .first()
+        is not None
+    )
+
+
+def process_mileage_reminders(db: Session, today: Optional[date] = None) -> Dict[str, int]:
+    """Service reminder for in-use vehicles within MILEAGE_REMINDER_THRESHOLD_MILES
+    of their next service mileage.
+
+    Current mileage is the same derived reading the Vehicle Details screen shows
+    (``_attach_mileage`` → the hire's latest odometer); the target is the newest
+    service record's ``next_service_due_at``. Fires a Vehicle Management
+    notification once a day per vehicle and keeps one matching system calendar
+    event in sync (created when it enters the window, removed when it leaves), so
+    the calendar doesn't churn on every poll. Safe to call on every poll.
+    """
+    today = today or date.today()
+    from fleet.services.vehicle_record_service import _attach_mileage
+    stats = {"mileage": 0, "no_recipient": 0}
+
+    records: List[FleetVehicleRecord] = (
+        db.query(FleetVehicleRecord)
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
+        .filter(FleetVehicleRecord.hire_id.isnot(None))  # in use = linked to a hire
+        .all()
+    )
+    for record in records:
+        svc = (
+            db.query(FleetVehicleService)
+            .filter(FleetVehicleService.vehicle_record_id == record.id)
+            .filter(FleetVehicleService.is_deleted.isnot(True))
+            .filter(FleetVehicleService.next_service_due_at.isnot(None))
+            .order_by(FleetVehicleService.position.desc().nullslast(), FleetVehicleService.id.desc())
+            .first()
+        )
+        if not svc:
+            continue
+        due = _to_int_miles(svc.next_service_due_at)
+        if due is None:
+            continue
+        _attach_mileage(db, record)  # sets record.latest_mileage_obtained / mileage_obtained_on
+        current = _to_int_miles(record.latest_mileage_obtained)
+        if current is None:
+            continue  # no odometer reading yet → nothing to measure against
+        remaining = due - current
+        label = _vehicle_label(record)
+        want_reminder = remaining <= MILEAGE_REMINDER_THRESHOLD_MILES
+
+        # One system calendar event per service record, written only on a state
+        # change (enter/leave the window) so the calendar doesn't churn per poll.
+        existing_event = (
+            db.query(CalendarEvent)
+            .filter(CalendarEvent.source == "system")
+            .filter(CalendarEvent.source_type == SERVICE_DUE_EVENT)
+            .filter(CalendarEvent.source_ref_id == svc.id)
+            .first()
+        )
+        if want_reminder and not existing_event:
+            sync_expiry_event(
+                db,
+                tenant_id=record.tenant_id,
+                source_type=SERVICE_DUE_EVENT,
+                source_ref_id=svc.id,
+                title=f"Service due soon — {label}",
+                description=(
+                    f"{label} is about {remaining:,} miles from its next service (due at {due:,} mi)."
+                    if remaining >= 0
+                    else f"{label} is about {abs(remaining):,} miles past its service point (due at {due:,} mi)."
+                ),
+                expiry=(record.mileage_obtained_on or today),
+                registration=record.registration_number,
+            )
+        elif not want_reminder and existing_event:
+            sync_expiry_event(
+                db, tenant_id=record.tenant_id, source_type=SERVICE_DUE_EVENT,
+                source_ref_id=svc.id, title="", description="", expiry=None,
+                registration=record.registration_number,
+            )
+
+        if not want_reminder:
+            continue
+        recipient = _recipient(record)
+        if not recipient:
+            stats["no_recipient"] += 1
+            continue
+        title = f"Service due soon — {label}"
+        if _already_notified_today(db, recipient, title, today):
+            continue
+        create_notification(
+            db,
+            recipient_user_id=recipient,
+            tenant_id=record.tenant_id,
+            category="Vehicles",
+            tab="Vehicles",
+            title=title,
+            description=(
+                f"{label} has about {remaining:,} miles left until its next service (due at {due:,} mi). Book it in."
+                if remaining >= 0
+                else f"{label} is about {abs(remaining):,} miles past its next service (due at {due:,} mi). Book it in."
+            ),
+        )
+        db.commit()
+        stats["mileage"] += 1
+
+    if stats["mileage"]:
+        logger.info("Fleet mileage service reminders for %s: %s", today, stats)
     return stats
 
 

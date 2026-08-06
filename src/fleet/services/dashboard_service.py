@@ -606,11 +606,11 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dic
         "compare_label": compare,
         "cards": [
             {"key": "vehicles_on_hire", "label": "Vehicles on Hire", "value": str(on_hire_now), "pct": oh_pct, "up": oh_up,
-             "sub": f"of {total} active units", "progress": oh_progress},
+             "sub": f"of {total} active vehicles", "progress": oh_progress},
             {"key": "net_income", "label": f"Net Income ({period})", "value": f"£{income_now:,.0f}", "pct": inc_pct, "up": inc_up,
              "sub": period_sub, "progress": inc_progress},
             {"key": "fleet_availability", "label": "Fleet Availability", "value": f"{avail_now}%", "pct": av_pct, "up": av_up,
-             "sub": f"{available_now} units available now", "progress": avail_now},
+             "sub": f"{available_now} vehicles available now", "progress": avail_now},
             {"key": "urgent_alerts", "label": "Urgent Alerts", "value": str(urgent_now), "pct": ur_pct, "up": ur_up,
              "sub": "needs action", "progress": 0},
         ],

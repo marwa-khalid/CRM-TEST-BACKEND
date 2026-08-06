@@ -581,6 +581,19 @@ class EngineerCompany(Base, AuditByMixin):
     postcode = Column(String(20), nullable=True)
 
 
+class InsurerCompany(Base, AuditByMixin):
+    """Master list of client insurer / broker companies (name + address) used for
+    the Company Name autocomplete on the Client Insurer & Broker screen. Mirrors
+    EngineerCompany; seeded from the client-insurer lookup and auto-extended when
+    a user types a new insurer name."""
+    __tablename__ = "insurer_companies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_name = Column(String(200), nullable=True)
+    address = Column(String(300), nullable=True)
+    postcode = Column(String(20), nullable=True)
+
+
 class DriverCommission(Base, AuditByMixin):
     __tablename__ = "driver_commissions"
 

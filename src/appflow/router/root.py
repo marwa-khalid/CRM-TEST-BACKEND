@@ -11,7 +11,7 @@ from appflow.router.vehicle_owner import vehicle_owner_router
 from appflow.router.engineer_detail import engineer_router
 from appflow.router.route_repair import router
 from appflow.router.total_loss import loss_router
-from appflow.router.insurer_broker import insurer_router
+from appflow.router.insurer_broker import insurer_router, insurer_company_router
 from appflow.router.panel_solicitor import panel_solicitor_router
 from appflow.router.storage_recovery import storage_recovery_router
 from appflow.router.third_party_insurer import third_party_insurer_router
@@ -73,6 +73,7 @@ root_router.include_router(router)
 root_router.include_router(loss_router)
 
 root_router.include_router(insurer_router)
+root_router.include_router(insurer_company_router)
 
 root_router.include_router(panel_solicitor_router)
 

@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
-from libdata.models.tables import InsurerBroker, Claim, Address, ClientDetail
+from libdata.models.tables import InsurerBroker, Claim, Address, ClientDetail, InsurerCompany
 from libdata.enums import PersonRoleEnum
 from appflow.models.insurer_broker import InsurerBrokerIn
 from appflow.utils import build_case_reference
@@ -32,6 +32,68 @@ class InsurerBrokerService:
         if not insurers:
             raise HTTPException(status_code=404, detail="No insurer brokers found for this company")
         return insurers
+
+    # ── Insurer company master (Company Name autocomplete) ───────────────────
+    # Separate catalogue table so the Client Insurer "Company Name" field can
+    # search + add just like the Referrer / Engineer company lookups.
+    @staticmethod
+    def search_insurer_companies(query: str, db: Session):
+        """Suggestions for the Client Insurer Company Name field (name + address)."""
+        search = (query or "").strip()
+        if not search:
+            return []
+        rows = (
+            db.query(InsurerCompany)
+            .filter(InsurerCompany.company_name.ilike(f"%{search}%"))
+            .order_by(InsurerCompany.company_name.asc())
+            .limit(20)
+            .all()
+        )
+        results, seen = [], set()
+        for r in rows:
+            name = (r.company_name or "").strip()
+            key = name.lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            results.append({"company_name": name, "address": r.address, "postcode": r.postcode})
+        return results
+
+    @staticmethod
+    def upsert_insurer_company(db: Session, company_name, address=None, postcode=None):
+        """Add a newly-typed insurer company to the master list so it shows up in
+        future suggestions. If it already exists, fill in / update its address &
+        postcode from what the user entered. Never raises (best-effort)."""
+        name = (company_name or "").strip()
+        if not name:
+            return None
+        addr = (address or "").strip() or None
+        pc = (postcode or "").strip() or None
+        try:
+            existing = (
+                db.query(InsurerCompany)
+                .filter(InsurerCompany.company_name.ilike(name))
+                .first()
+            )
+            if existing:
+                changed = False
+                if addr and addr != existing.address:
+                    existing.address = addr
+                    changed = True
+                if pc and pc != existing.postcode:
+                    existing.postcode = pc
+                    changed = True
+                if changed:
+                    db.commit()
+                return existing
+            row = InsurerCompany(company_name=name, address=addr, postcode=pc)
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return row
+        except Exception:
+            db.rollback()
+            return None
 
     @staticmethod
     def create_insurer(insurer: InsurerBrokerIn, db: Session, tenant_id: int, current_user_id: int):
@@ -101,6 +163,13 @@ class InsurerBrokerService:
             db.add(new_insurer)
             db.commit()
             db.refresh(new_insurer)
+            # Remember this company for the Company Name autocomplete.
+            InsurerBrokerService.upsert_insurer_company(
+                db,
+                new_insurer.company_name,
+                (address_data or {}).get("address"),
+                (address_data or {}).get("postcode"),
+            )
             reference = build_case_reference(claim.id,db)
             HistoryActivityService.create_activity(
                 db=db,
@@ -213,6 +282,13 @@ class InsurerBrokerService:
             existing.updated_by=current_user_id
             db.commit()
             db.refresh(existing)
+            # Remember this company for the Company Name autocomplete.
+            InsurerBrokerService.upsert_insurer_company(
+                db,
+                existing.company_name,
+                (address_data or {}).get("address"),
+                (address_data or {}).get("postcode"),
+            )
             if changed_fields:
                 readable_changes = [field_label_map.get(f, f) for f in changed_fields]
                 file_path = ", ".join(readable_changes)
