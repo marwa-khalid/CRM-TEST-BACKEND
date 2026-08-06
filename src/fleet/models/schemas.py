@@ -537,6 +537,8 @@ class VehicleRecordResponse(VehicleRecordUpdate):
     # Section C — read-only, pulled from the Skyline (client-side) hire screens.
     latest_mileage_obtained: Optional[str] = None
     mileage_obtained_on: Optional[date] = None
+    # When the vehicle record was created — surfaced as "Date Added" in the listing.
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
