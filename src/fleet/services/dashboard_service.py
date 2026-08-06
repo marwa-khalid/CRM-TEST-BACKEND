@@ -356,13 +356,17 @@ def get_compliance(db: Session, tenant_id: Optional[int]) -> dict:
     result = []
     for key, title in _COMPLIANCE_TITLES:
         items = cats.get(key, [])
-        total = len(items) or 1
+        total = len(items)
+        denom = total or 1
         overdue = sum(1 for _, e in items if e < today)
         d7 = sum(1 for _, e in items if today <= e <= today + timedelta(days=7))
         d30 = sum(1 for _, e in items if today <= e <= today + timedelta(days=30))
         result.append({
-            "key": key, "title": title,
-            "overdue": overdue, "bar": round(overdue / total * 100), "d7": d7, "d30": d30,
+            "key": key, "title": title, "total": total,
+            "overdue": overdue, "bar": round(overdue / denom * 100), "d7": d7, "d30": d30,
+            # % of the fleet whose document isn't overdue — the "Compliant" figure.
+            "compliant": round((denom - overdue) / denom * 100),
+            "amber": round(d30 / denom * 100),  # at-risk share for the middle bar segment
         })
     return {"categories": result}
 
@@ -506,6 +510,12 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
         return (due, [reg, cust, f"£{due_amt:,.2f}", f"£{outstanding:,.2f}",
                       due.strftime("%d %b %Y") if due else "—", [label, tone]])
 
+    # Left-panel summary: money owed by bucket + received so far this week + a
+    # per-weekday received breakdown for the mini chart.
+    week_start = today - timedelta(days=today.weekday())  # Monday
+    amt = {"overdue": 0.0, "due_today": 0.0, "due_this_week": 0.0, "received": 0.0}
+    by_day = [0.0] * 7
+
     for pay, hire, veh in q.all():
         due = _payment_due_date(hire.payment_hire_start_date, hire.payment_day, pay.week)
         due_amt = _to_float(pay.due_amount)
@@ -516,18 +526,33 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
 
         if pay.payment_date == today:
             buckets["received_today"].append(_row(reg, cust, due_amt, outstanding, due, "Received Today", "green"))
+        if pay.payment_date and week_start <= pay.payment_date <= today:
+            amt["received"] += paid
+            by_day[pay.payment_date.weekday()] += paid
         owed = (pay.status or "").strip().lower() != "received"
         if owed and due:
             if due == today:
                 buckets["due_today"].append(_row(reg, cust, due_amt, outstanding, due, "Due Today", "orange"))
+                amt["due_today"] += outstanding
             elif today < due <= week_end:
                 buckets["due_this_week"].append(_row(reg, cust, due_amt, outstanding, due, "Due This Week", "blue"))
+                amt["due_this_week"] += outstanding
             elif due < today:
                 buckets["overdue"].append(_row(reg, cust, due_amt, outstanding, due, "Overdue", "red"))
+                amt["overdue"] += outstanding
 
+    total = amt["overdue"] + amt["due_today"] + amt["due_this_week"] + amt["received"]
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     return {
         "tabs": {k: len(v) for k, v in buckets.items()},
         "rows": {k: [r[1] for r in sorted(v, key=lambda x: (x[0] or today))][:10] for k, v in buckets.items()},
+        "summary": {
+            "total": f"£{total:,.0f}",
+            "overdue": f"£{amt['overdue']:,.0f}",
+            "due_today": f"£{amt['due_today']:,.0f}",
+            "received": f"£{amt['received']:,.0f}",
+            "by_day": [{"day": d, "amount": round(a)} for d, a in zip(day_names, by_day)],
+        },
     }
 
 
@@ -571,13 +596,22 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dic
     av_pct, av_up = _delta(avail_now, avail_prev)
     ur_pct, ur_up = _delta(urgent_now, urgent_prev, higher_is_better=False)
 
+    # Sub-labels + progress bars for the Fleet Performance card.
+    period_sub = {"WTD": "Week to date", "MTD": "Month to date", "YTD": "Year to date"}.get(period, "Month to date")
+    oh_progress = round(on_hire_now / total * 100) if total else 0
+    inc_progress = max(0, min(100, round(50 + (float(inc_pct) if inc_up else -float(inc_pct)) / 2)))
+
     return {
         "period": period,
         "compare_label": compare,
         "cards": [
-            {"key": "vehicles_on_hire", "label": "Vehicles on Hire", "value": str(on_hire_now), "pct": oh_pct, "up": oh_up},
-            {"key": "net_income", "label": f"Net Income ({period})", "value": f"£{income_now:,.0f}", "pct": inc_pct, "up": inc_up},
-            {"key": "fleet_availability", "label": "Fleet Availability", "value": f"{avail_now}%", "pct": av_pct, "up": av_up},
-            {"key": "urgent_alerts", "label": "Urgent Alerts", "value": str(urgent_now), "pct": ur_pct, "up": ur_up},
+            {"key": "vehicles_on_hire", "label": "Vehicles on Hire", "value": str(on_hire_now), "pct": oh_pct, "up": oh_up,
+             "sub": f"of {total} active units", "progress": oh_progress},
+            {"key": "net_income", "label": f"Net Income ({period})", "value": f"£{income_now:,.0f}", "pct": inc_pct, "up": inc_up,
+             "sub": period_sub, "progress": inc_progress},
+            {"key": "fleet_availability", "label": "Fleet Availability", "value": f"{avail_now}%", "pct": av_pct, "up": av_up,
+             "sub": f"{available_now} units available now", "progress": avail_now},
+            {"key": "urgent_alerts", "label": "Urgent Alerts", "value": str(urgent_now), "pct": ur_pct, "up": ur_up,
+             "sub": "needs action", "progress": 0},
         ],
     }
