@@ -54,6 +54,15 @@ def vehicle_status_route(
     return dashboard_service.get_vehicle_status(db, tenant_id)
 
 
+@router.get("/dashboard/vehicles")
+def fleet_vehicles_route(
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Live vehicle list for the "Skyline Vehicles" section (status + hire info)."""
+    return dashboard_service.get_fleet_vehicles(db, tenant_id)
+
+
 @router.get("/dashboard/weekly-payments")
 def weekly_payments_route(
     db: Session = Depends(get_session),

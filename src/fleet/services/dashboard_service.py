@@ -20,6 +20,7 @@ from fleet.models.tables import (
     FleetHireVehicle,
     FleetVehicleLicensingAuthority,
     FleetVehicleRecord,
+    FleetVehicleRegister,
     FleetVehicleService,
 )
 
@@ -329,6 +330,68 @@ def get_vehicle_status(db: Session, tenant_id: Optional[int]) -> dict:
     segments = [{"label": s, "value": counts.pop(s)} for s in _STATUS_ORDER if s in counts]
     segments += [{"label": s, "value": n} for s, n in counts.items()]
     return {"total": sum(s["value"] for s in segments), "segments": segments}
+
+
+def _norm_reg(value: Optional[str]) -> str:
+    return "".join(ch for ch in (value or "").upper() if ch.isalnum())
+
+
+def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
+    """Live vehicle list for the dashboard's "Skyline Vehicles" section — one row
+    per vehicle record (same source as the status donut), with its status and, for
+    on-hire vehicles, the driver + how long it's been on hire. Empty when the fleet
+    has no vehicle records (so deleting them clears the section)."""
+    today = date.today()
+
+    # On-hire registrations from the shared register flag (kept accurate by the
+    # vehicle service's reconciliation), plus driver + start date for hire info.
+    active = set()
+    for r in db.query(FleetVehicleRegister).all():
+        if r.is_active and r.registration_number:
+            active.add(_norm_reg(r.registration_number))
+
+    hire_by_reg: dict = {}
+    hv_q = (
+        db.query(FleetHireVehicle, FleetHire)
+        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
+    )
+    if tenant_id is not None:
+        hv_q = hv_q.filter(FleetHire.tenant_id == tenant_id)
+    for hv, hire in hv_q.all():
+        n = _norm_reg(hv.registration_number)
+        if n and n not in hire_by_reg:
+            hire_by_reg[n] = (hire.driver_name, hv.hire_start_date)
+
+    q = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True))
+    if tenant_id is not None:
+        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+
+    items = []
+    for v in q.order_by(FleetVehicleRecord.registration_number.asc()).all():
+        reg = (v.registration_number or "").strip()
+        n = _norm_reg(reg)
+        model = " ".join(x for x in [v.make, v.model] if x) or "—"
+        vs = (v.vehicle_status or "").strip().lower()
+        if "repair" in vs:
+            key, label = "repair", "In Repair"
+        elif n in active:
+            key, label = "hire", "On Hire"
+        elif "off" in vs:
+            key, label = "off", "Off Hire"
+        else:
+            key, label = "available", "Available"
+        item = {"registration": reg or "—", "model": model, "statusKey": key, "statusLabel": label}
+        if key == "hire":
+            driver, start = hire_by_reg.get(n, (None, None))
+            if start:
+                days = max(0, (today - start).days)
+                item["hireInfo"] = f"On Hire for {days} Day{'s' if days != 1 else ''}"
+            if (driver or "").strip():
+                item["customer"] = driver.strip()
+        items.append(item)
+    return {"items": items}
 
 
 # ── Compliance + expiry cards (Road Fund / Plate / MOT / Service) ─────────────
