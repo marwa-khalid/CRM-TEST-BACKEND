@@ -76,6 +76,9 @@ def get_hire_trend(
     start: Optional[str] = None,
     end: Optional[str] = None,
     status: Optional[str] = None,
+    cmp_type: str = "",
+    a: str = "",
+    b: str = "",
 ) -> dict:
     """Vehicle-hire counts for the Fleet dashboard's Hire Trend graph.
 
@@ -110,6 +113,30 @@ def get_hire_trend(
             "caption": f"{today.year - 1} vs {today.year}",
             "comparison_note": "from last year",
         }
+
+    # ── Custom Year/Month comparison: two chosen periods, side by side ────────
+    if period == "CUSTOM" and cmp_type and a and b:
+        ct = cmp_type.strip().lower()
+        try:
+            if ct == "year":
+                ya, yb = int(a), int(b)
+                va = _count_between(dates, date(ya, 1, 1), date(ya + 1, 1, 1))
+                vb = _count_between(dates, date(yb, 1, 1), date(yb + 1, 1, 1))
+                la, lb = str(ya), str(yb)
+            else:  # month, a/b are "YYYY-MM"
+                sa = date(int(a[:4]), int(a[5:7]), 1)
+                sb = date(int(b[:4]), int(b[5:7]), 1)
+                va = _count_between(dates, sa, _add_months(sa, 1))
+                vb = _count_between(dates, sb, _add_months(sb, 1))
+                la, lb = _month_label(sa, True), _month_label(sb, True)
+            return {
+                "labels": [la, lb],
+                "values": [va, vb],
+                "caption": f"{la} vs {lb}",
+                "comparison_note": f"vs {la}",
+            }
+        except (ValueError, IndexError):
+            pass
 
     # ── Period buckets ────────────────────────────────────────────────────────
     labels: List[str] = []
@@ -404,6 +431,20 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
         return None  # further-future expiries aren't surfaced
 
     cats = _expiry_dates_by_category(db, tenant_id)
+
+    # reg -> driver name (via the vehicle's current hire), for the card/slider.
+    driver_by_reg: dict = {}
+    dq = (
+        db.query(FleetVehicleRecord.registration_number, FleetHire.driver_name)
+        .join(FleetHire, FleetVehicleRecord.hire_id == FleetHire.id)
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
+    )
+    if tenant_id is not None:
+        dq = dq.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    for reg, drv in dq.all():
+        if reg and drv and reg not in driver_by_reg:
+            driver_by_reg[reg] = drv
+
     cards: dict = {}
     for key, _title in _EXPIRY_TITLES:
         items = sorted(cats.get(key, []), key=lambda x: x[1])
@@ -411,7 +452,7 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
         for reg, e in items:
             bucket = _bucket(e)
             if bucket:
-                rows[bucket].append([reg or "—", e.strftime("%d %b %Y"), list(_remaining_label(e, today))])
+                rows[bucket].append([reg or "—", e.strftime("%d %b %Y"), list(_remaining_label(e, today)), driver_by_reg.get(reg, "—")])
         cards[key] = {
             "tabs": {k: len(v) for k, v in rows.items()},
             "rows": {k: v[:50] for k, v in rows.items()},  # full set for the slider; card shows first 5
@@ -444,14 +485,45 @@ def _missing_documents(db: Session, tenant_id: Optional[int]) -> list:
     return items
 
 
-def get_missing_documents(db: Session, tenant_id: Optional[int]) -> dict:
-    """Full list of vehicles missing a required document (Attention slider)."""
-    return {"items": _missing_documents(db, tenant_id)}
+def _missing_driver_documents(db: Session, tenant_id: Optional[int]) -> list:
+    """Driver-side missing / expired documents for the Skyline dashboard: the
+    hirer's driving licence and (for taxi drivers) taxi badge, one item each."""
+    today = date.today()
+    q = db.query(FleetHire).filter(FleetHire.is_deleted.isnot(True))
+    if tenant_id is not None:
+        q = q.filter(FleetHire.tenant_id == tenant_id)
+    items = []
+    for h in q.all():
+        who = (h.driver_name or "").strip() or "—"
+        if not (h.driving_licence_number or "").strip():
+            items.append({"label": "Driving Licence", "registration": who, "hire_id": h.id})
+        elif h.driving_licence_end and h.driving_licence_end < today:
+            items.append({"label": "Driving Licence (Expired)", "registration": who, "hire_id": h.id})
+        if (h.hirer_type or "").strip().lower() == "taxi_driver":
+            if not (h.taxi_badge_number or "").strip():
+                items.append({"label": "Taxi Badge", "registration": who, "hire_id": h.id})
+            elif h.taxi_badge_expiry and h.taxi_badge_expiry < today:
+                items.append({"label": "Taxi Badge (Expired)", "registration": who, "hire_id": h.id})
+    return items
 
 
-def get_attention(db: Session, tenant_id: Optional[int]) -> dict:
+def _missing_docs_for_side(db: Session, tenant_id: Optional[int], side: str) -> list:
+    """Skyline → driver documents; Vehicle Management (default) → vehicle documents."""
+    if (side or "").strip().lower() == "skyline":
+        return _missing_driver_documents(db, tenant_id)
+    return _missing_documents(db, tenant_id)
+
+
+def get_missing_documents(db: Session, tenant_id: Optional[int], side: str = "vehicles") -> dict:
+    """Full list of missing documents for the Attention slider — vehicle docs for
+    Vehicle Management, driver docs (driving licence / taxi badge) for Skyline."""
+    return {"items": _missing_docs_for_side(db, tenant_id, side)}
+
+
+def get_attention(db: Session, tenant_id: Optional[int], side: str = "vehicles") -> dict:
     """The three Attention-Required tiles: vehicles out past their return date,
-    vehicles missing a required document, and hire payments past due."""
+    documents missing (vehicle docs for VM / driver docs for Skyline), and hire
+    payments past due."""
     today = date.today()
 
     returns_q = (
@@ -467,9 +539,73 @@ def get_attention(db: Session, tenant_id: Optional[int]) -> dict:
 
     return {
         "overdue_returns": returns_q.scalar() or 0,
-        "missing_documents": len(_missing_documents(db, tenant_id)),
+        "missing_documents": len(_missing_docs_for_side(db, tenant_id, side)),
         "overdue_payments": get_weekly_payments(db, tenant_id)["tabs"]["overdue"],
     }
+
+
+def get_overdue_returns(db: Session, tenant_id: Optional[int]) -> dict:
+    """Detail rows for the Overdue Returns slider: vehicles still on hire whose
+    expected return date has passed. Mirrors the count in ``get_attention``."""
+    today = date.today()
+    q = (
+        db.query(FleetHireVehicle, FleetHire)
+        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
+        .filter(FleetHireVehicle.hire_end_date.isnot(None))
+        .filter(FleetHireVehicle.hire_end_date < today)
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetHire.tenant_id == tenant_id)
+    items = []
+    for veh, hire in q.order_by(FleetHireVehicle.hire_end_date.asc()).all():
+        end = veh.hire_end_date
+        days = (today - end).days if end else 0
+        model = " ".join(x for x in [veh.make, veh.model] if x)
+        items.append({
+            "registration": veh.registration_number or "—",
+            "model": model or "—",
+            "driver": (hire.driver_name or "").strip() or "—",
+            "due_date": end.strftime("%d %b %Y") if end else "—",
+            "days_overdue": days,
+            "hire_id": hire.id,
+        })
+    return {"items": items}
+
+
+def get_overdue_payments(db: Session, tenant_id: Optional[int]) -> dict:
+    """Detail rows for the Overdue Payments slider: owed weekly payments whose
+    derived due date has passed. Mirrors the count in ``get_attention``."""
+    today = date.today()
+    q = (
+        db.query(FleetHirePayment, FleetHire, FleetHireVehicle)
+        .join(FleetHire, FleetHirePayment.hire_id == FleetHire.id)
+        .outerjoin(FleetHireVehicle, FleetHirePayment.vehicle_id == FleetHireVehicle.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetHire.tenant_id == tenant_id)
+    items = []
+    for pay, hire, veh in q.all():
+        if (pay.status or "").strip().lower() == "received":
+            continue
+        due = _payment_due_date(hire.payment_hire_start_date, hire.payment_day, pay.week)
+        if not (due and due < today):
+            continue
+        due_amt = _to_float(pay.due_amount)
+        paid = _to_float(pay.paid_amount)
+        outstanding = max(0.0, due_amt - paid)
+        items.append({
+            "registration": (veh.registration_number if veh else "—") or "—",
+            "driver": (hire.driver_name or "").strip() or "—",
+            "amount": f"£{outstanding:,.2f}",
+            "due_date": due.strftime("%d %b %Y"),
+            "days_overdue": (today - due).days,
+            "hire_id": hire.id,
+        })
+    items.sort(key=lambda x: -x["days_overdue"])
+    return {"items": items}
 
 
 _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
@@ -532,10 +668,10 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
         owed = (pay.status or "").strip().lower() != "received"
         if owed and due:
             if due == today:
-                buckets["due_today"].append(_row(reg, cust, due_amt, outstanding, due, "Due Today", "orange"))
+                buckets["due_today"].append(_row(reg, cust, due_amt, outstanding, due, "Due Today", "gray"))
                 amt["due_today"] += outstanding
             elif today < due <= week_end:
-                buckets["due_this_week"].append(_row(reg, cust, due_amt, outstanding, due, "Due This Week", "blue"))
+                buckets["due_this_week"].append(_row(reg, cust, due_amt, outstanding, due, "Due This Week", "yellow"))
                 amt["due_this_week"] += outstanding
             elif due < today:
                 buckets["overdue"].append(_row(reg, cust, due_amt, outstanding, due, "Overdue", "red"))

@@ -2,9 +2,10 @@
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from fleet.models.tables import FleetHireVehicle, FleetVehicleRegister
+from fleet.models.tables import FleetHire, FleetHireVehicle, FleetVehicleRegister
 from fleet.services.common import get_hire_or_404
 
 def create_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], actor_id: Optional[int]) -> FleetHireVehicle:
@@ -28,6 +29,48 @@ def list_vehicles(db: Session, hire_id: int, tenant_id: Optional[int]):
 
 
 def list_vehicle_register(db: Session):
+    # is_active is the shared on-hire flag, but it can drift from reality — a hire
+    # can be marked on_hire before its register row exists, so the row is either
+    # missing or left inactive (this is why a vehicle can read "On Hire" on the
+    # Skyline list yet "Available" in Vehicle Management). Reconcile it here from
+    # the actual active hires — the same signal the Skyline list uses — so every
+    # consumer agrees. Activate-only: never flip a row inactive (a vehicle may be
+    # reserved on the Claims side without a fleet hire), so Claims state is safe.
+    on_hire: dict = {}
+    hv_rows = (
+        db.query(FleetHireVehicle)
+        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
+        .all()
+    )
+    for hv in hv_rows:
+        n = _normalise_registration(hv.registration_number)
+        if n:
+            on_hire.setdefault(n, hv)
+
+    rows = db.query(FleetVehicleRegister).all()
+    seen = set()
+    changed = False
+    for row in rows:
+        n = _normalise_registration(row.registration_number)
+        seen.add(n)
+        if n in on_hire and not row.is_active:
+            row.is_active = True
+            changed = True
+    for n, hv in on_hire.items():
+        if n not in seen:
+            db.add(FleetVehicleRegister(
+                registration_number=hv.registration_number,
+                make=hv.make or "",
+                model=hv.model or "",
+                transmission=hv.transmission or None,
+                is_active=True,
+            ))
+            changed = True
+    if changed:
+        db.commit()
+
     return (
         db.query(FleetVehicleRegister)
         .order_by(FleetVehicleRegister.registration_number.asc())
@@ -99,6 +142,10 @@ def _set_register_activation(db: Session, registration_number: Optional[str], is
         if _normalise_registration(row.registration_number) == normalised:
             row.is_active = is_active
             return
+    # No register row yet — create one so an "on hire" activation isn't silently
+    # dropped (the register row may not have been synced before the hire saved).
+    if is_active:
+        db.add(FleetVehicleRegister(registration_number=normalised, make="", model="", is_active=True))
 
 
 def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_id: int, data: dict) -> FleetHireVehicle:

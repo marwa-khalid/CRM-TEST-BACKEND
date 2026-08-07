@@ -17,15 +17,22 @@ def hire_trend_route(
     start: Optional[str] = None,
     end: Optional[str] = None,
     status: Optional[str] = None,
+    cmp_type: str = "",
+    a: str = "",
+    b: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
     """Vehicle-hire counts for the Fleet dashboard's Hire Trend chart.
 
     ``period``: WTD | MTD | YTD | CUSTOM. ``mode``: YOY | MOM (two-bar compare).
-    ``status``: on_hire | off_hire (optional filter).
+    ``status``: on_hire | off_hire (optional filter). For a Custom year/month
+    comparison pass ``cmp_type`` (year|month) with ``a`` and ``b`` (the two periods).
     """
-    return dashboard_service.get_hire_trend(db, tenant_id, period=period, mode=mode, start=start, end=end, status=status)
+    return dashboard_service.get_hire_trend(
+        db, tenant_id, period=period, mode=mode, start=start, end=end,
+        status=status, cmp_type=cmp_type, a=a, b=b,
+    )
 
 
 @router.get("/dashboard/stats")
@@ -76,17 +83,39 @@ def expiries_route(
 
 @router.get("/dashboard/attention")
 def attention_route(
+    side: str = "vehicles",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Attention-required tiles (overdue returns / missing documents / overdue payments)."""
-    return dashboard_service.get_attention(db, tenant_id)
+    """Attention-required tiles. ``side`` (skyline | vehicles) picks driver-doc vs
+    vehicle-doc counting for the Missing Documents tile."""
+    return dashboard_service.get_attention(db, tenant_id, side=side)
 
 
 @router.get("/dashboard/missing-documents")
 def missing_documents_route(
+    side: str = "vehicles",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """List of vehicles missing a required document (for the Attention slider)."""
-    return dashboard_service.get_missing_documents(db, tenant_id)
+    """Missing documents for the Attention slider. ``side``: skyline → driver docs
+    (driving licence / taxi badge); vehicles → vehicle docs (MOT / Plate)."""
+    return dashboard_service.get_missing_documents(db, tenant_id, side=side)
+
+
+@router.get("/dashboard/overdue-returns")
+def overdue_returns_route(
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Detail rows for the Overdue Returns slider (vehicles out past return date)."""
+    return dashboard_service.get_overdue_returns(db, tenant_id)
+
+
+@router.get("/dashboard/overdue-payments")
+def overdue_payments_route(
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Detail rows for the Overdue Payments slider (owed payments past due date)."""
+    return dashboard_service.get_overdue_payments(db, tenant_id)

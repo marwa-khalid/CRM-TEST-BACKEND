@@ -13,12 +13,14 @@ router = APIRouter()
 
 @router.get("/reminders/due")
 def list_due_reminders_route(
+    side: str = "vehicles",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Read-only list of currently-due fleet expiry reminders (road tax / plate /
-    MOT). Does not fire or send anything — used to surface reminders in the UI."""
-    return reminder_watcher.list_due_reminders(db)
+    """Read-only list of currently-due fleet expiry reminders. ``side``:
+    ``vehicles`` → Road Fund / Plate / MOT; ``skyline`` → driver docs (Driving
+    Licence / Taxi Badge). Does not fire or send anything — just surfaces them."""
+    return reminder_watcher.list_due_reminders(db, side=side)
 
 
 @router.get("/reminders/expiries")

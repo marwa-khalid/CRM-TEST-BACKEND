@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from fleet.deps import CalendarEvent, create_notification
 from fleet.models.tables import (
+    FleetHire,
     FleetVehicleLicensingAuthority,
     FleetVehicleRecord,
     FleetVehicleService,
@@ -390,13 +391,46 @@ def process_mileage_reminders(db: Session, today: Optional[date] = None) -> Dict
     return stats
 
 
-def list_due_reminders(db: Session, today: Optional[date] = None) -> List[Dict]:
+def list_due_reminders(db: Session, side: str = "vehicles", today: Optional[date] = None) -> List[Dict]:
     """Read-only view of the currently-due expiry reminders (does not fire or
     send anything). Same due criteria as ``process_fleet_reminders`` — used to
-    show the reminders in the UI."""
+    show the reminders in the UI.
+
+    ``side`` scopes which reminders belong to the caller's screen:
+      * ``vehicles`` (default) — vehicle documents: Road Fund / Plate / MOT.
+      * ``skyline`` — driver documents: Driving Licence and (taxi drivers) Taxi
+        Badge. Vehicle-doc reminders do not belong to the Skyline (hire) list.
+    """
     today = today or date.today()
     window_end = today + timedelta(days=REMINDER_WINDOW_DAYS)
     out: List[Dict] = []
+
+    # ── Skyline (hire) screen: driver-document expiries only ──────────────────
+    if (side or "").strip().lower() == "skyline":
+        hires = db.query(FleetHire).filter(FleetHire.is_deleted.isnot(True)).all()
+        for hire in hires:
+            who = (hire.driver_name or "").strip() or f"Hire #{hire.id}"
+            lic = hire.driving_licence_end
+            if lic and lic <= window_end:
+                out.append({
+                    "kind": "driving_licence",
+                    "title": f"Driving licence {_due_phrase(lic, today)} — {who}",
+                    "vehicle": who,
+                    "expiry_date": lic.isoformat(),
+                    "hire_id": hire.id,
+                })
+            if (hire.hirer_type or "").strip().lower() == "taxi_driver":
+                badge = hire.taxi_badge_expiry
+                if badge and badge <= window_end:
+                    out.append({
+                        "kind": "taxi_badge",
+                        "title": f"Taxi badge {_due_phrase(badge, today)} — {who}",
+                        "vehicle": who,
+                        "expiry_date": badge.isoformat(),
+                        "hire_id": hire.id,
+                    })
+        out.sort(key=lambda x: x["expiry_date"])
+        return out
 
     records = (
         db.query(FleetVehicleRecord)
