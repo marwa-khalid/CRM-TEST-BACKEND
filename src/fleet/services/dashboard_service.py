@@ -310,86 +310,115 @@ def _delta(now: float, prev: float, higher_is_better: bool = True) -> Tuple[str,
     return f"{pct:.1f}", improved
 
 
-_STATUS_ORDER = ["Available", "On Hire", "In Repair", "Off Fleet", "Awaiting Plating", "Awaiting De-fleet"]
-
-
-def get_vehicle_status(db: Session, tenant_id: Optional[int]) -> dict:
-    """Vehicle-status distribution for the donut. Groups fleet_vehicle_record by
-    vehicle_status (blank/null statuses excluded); known statuses come first in a
-    stable order, any others follow. Returns {total, segments:[{label, value}]}."""
-    q = db.query(FleetVehicleRecord.vehicle_status, func.count(FleetVehicleRecord.id)).filter(
-        FleetVehicleRecord.is_deleted.isnot(True)
-    )
-    if tenant_id is not None:
-        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    counts: dict = {}
-    for status, n in q.group_by(FleetVehicleRecord.vehicle_status).all():
-        label = (status or "").strip()
-        if label:
-            counts[label] = counts.get(label, 0) + n
-    segments = [{"label": s, "value": counts.pop(s)} for s in _STATUS_ORDER if s in counts]
-    segments += [{"label": s, "value": n} for s, n in counts.items()]
-    return {"total": sum(s["value"] for s in segments), "segments": segments}
+_STATUS_ORDER = ["Available", "On Hire", "Off Hire", "In Repair", "For Sale",
+                 "Skyline Hire", "Off Fleet", "Awaiting Plating", "Awaiting De-fleet"]
 
 
 def _norm_reg(value: Optional[str]) -> str:
     return "".join(ch for ch in (value or "").upper() if ch.isalnum())
 
 
-def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
-    """Live vehicle list for the dashboard's "Skyline Vehicles" section — one row
-    per vehicle record (same source as the status donut), with its status and, for
-    on-hire vehicles, the driver + how long it's been on hire. Empty when the fleet
-    has no vehicle records (so deleting them clears the section)."""
-    today = date.today()
-
-    # On-hire registrations from the shared register flag (kept accurate by the
-    # vehicle service's reconciliation), plus driver + start date for hire info.
-    active = set()
-    for r in db.query(FleetVehicleRegister).all():
-        if r.is_active and r.registration_number:
-            active.add(_norm_reg(r.registration_number))
-
-    hire_by_reg: dict = {}
-    hv_q = (
-        db.query(FleetHireVehicle, FleetHire)
-        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
-        .filter(FleetHire.is_deleted.isnot(True))
-        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
-    )
-    if tenant_id is not None:
-        hv_q = hv_q.filter(FleetHire.tenant_id == tenant_id)
-    for hv, hire in hv_q.all():
-        n = _norm_reg(hv.registration_number)
-        if n and n not in hire_by_reg:
-            hire_by_reg[n] = (hire.driver_name, hv.hire_start_date)
+def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
+    """Union of Vehicle Management records and hire vehicles, keyed by registration,
+    each carrying its *effective* status. A vehicle currently on/off hire (from
+    fleet_hire_vehicle) takes "On Hire"/"Off Hire" regardless of the record's stored
+    vehicle_status, and a hire vehicle with no matching record is still included — so
+    an on-hire (or off-hire) vehicle always shows on the dashboard. This is the shared
+    source for both the status donut and the "Skyline Vehicles" list, so they agree."""
+    by_reg: dict = {}
 
     q = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True))
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    for v in q.all():
+        n = _norm_reg(v.registration_number)
+        if not n:
+            continue
+        by_reg[n] = {
+            "registration": (v.registration_number or "").strip() or "—",
+            "make": v.make, "model": v.model,
+            "status": (v.vehicle_status or "").strip() or "Available",
+            "hire_id": None, "driver": None, "hire_start": None,
+        }
 
-    items = []
-    for v in q.order_by(FleetVehicleRecord.registration_number.asc()).all():
-        reg = (v.registration_number or "").strip()
-        n = _norm_reg(reg)
-        model = " ".join(x for x in [v.make, v.model] if x) or "—"
-        vs = (v.vehicle_status or "").strip().lower()
-        if "repair" in vs:
-            key, label = "repair", "In Repair"
-        elif n in active:
-            key, label = "hire", "On Hire"
-        elif "off" in vs:
-            key, label = "off", "Off Hire"
+    # Overlay hire vehicles — on_hire wins over off_hire wins over the record status.
+    hv_q = (
+        db.query(FleetHireVehicle, FleetHire)
+        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+    )
+    if tenant_id is not None:
+        hv_q = hv_q.filter(FleetHire.tenant_id == tenant_id)
+    for hv, hire in hv_q.all():
+        hs = (hv.hire_status or "").strip().lower()
+        if hs not in ("on_hire", "off_hire"):
+            continue
+        n = _norm_reg(hv.registration_number)
+        if not n:
+            continue
+        label = "On Hire" if hs == "on_hire" else "Off Hire"
+        cur = by_reg.get(n)
+        if cur is not None:
+            if cur["status"] == "On Hire" and label == "Off Hire":
+                continue  # don't downgrade an already on-hire vehicle
+            cur["status"] = label
+            cur["hire_id"] = hire.id
+            cur["driver"] = hire.driver_name
+            cur["hire_start"] = hv.hire_start_date
+            if not (cur.get("make") or "").strip():
+                cur["make"] = hv.make
+            if not (cur.get("model") or "").strip():
+                cur["model"] = hv.model
         else:
-            key, label = "available", "Available"
-        item = {"registration": reg or "—", "model": model, "statusKey": key, "statusLabel": label}
+            by_reg[n] = {
+                "registration": (hv.registration_number or "").strip() or "—",
+                "make": hv.make, "model": hv.model, "status": label,
+                "hire_id": hire.id, "driver": hire.driver_name, "hire_start": hv.hire_start_date,
+            }
+    return sorted(by_reg.values(), key=lambda x: x["registration"])
+
+
+def get_vehicle_status(db: Session, tenant_id: Optional[int]) -> dict:
+    """Vehicle-status distribution for the donut. Counts the effective vehicle list
+    (records + hire on/off-hire), so On Hire / Off Hire vehicles are reflected. Known
+    statuses come first in a stable order, any others follow."""
+    counts: dict = {}
+    for v in _effective_vehicle_list(db, tenant_id):
+        label = (v["status"] or "").strip()
+        if label:
+            counts[label] = counts.get(label, 0) + 1
+    segments = [{"label": s, "value": counts.pop(s)} for s in _STATUS_ORDER if s in counts]
+    segments += [{"label": s, "value": n} for s, n in counts.items()]
+    return {"total": sum(s["value"] for s in segments), "segments": segments}
+
+
+def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
+    """Live vehicle list for the dashboard's "Skyline Vehicles" section — the same
+    effective list the status donut counts (records + hire on/off-hire). On-hire and
+    off-hire vehicles read as such (never "Available"), and on-hire carries the driver
+    + how long it's been out. Empty when there are no vehicles or hires."""
+    today = date.today()
+    items = []
+    for v in _effective_vehicle_list(db, tenant_id):
+        model = " ".join(x for x in [v.get("make"), v.get("model")] if x) or "—"
+        s = (v["status"] or "").strip()
+        sl = s.lower()
+        if s == "On Hire":
+            key = "hire"
+        elif s == "Off Hire":
+            key = "off"
+        elif "repair" in sl:
+            key = "repair"
+        else:
+            key = "available"
+        item = {"registration": v["registration"], "model": model, "statusKey": key, "statusLabel": s or "Available"}
         if key == "hire":
-            driver, start = hire_by_reg.get(n, (None, None))
+            start = v.get("hire_start")
             if start:
                 days = max(0, (today - start).days)
                 item["hireInfo"] = f"On Hire for {days} Day{'s' if days != 1 else ''}"
-            if (driver or "").strip():
-                item["customer"] = driver.strip()
+            if (v.get("driver") or "").strip():
+                item["customer"] = v["driver"].strip()
         items.append(item)
     return {"items": items}
 
