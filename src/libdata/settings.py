@@ -8,7 +8,7 @@ from pydantic_settings import  BaseSettings
 class Settings(BaseSettings):
     database_url: str = Field(
         env="DATABASE_URL",
-        default="postgresql://postgres:llpzHyFdmOUxXJwkwnHzBjymASMvbyVA@hayabusa.proxy.rlwy.net:50508/railway"
+        default="postgresql://postgres:jCPoefeMywzvTvvCnMCjxUSIpDTXkjxP@reseau.proxy.rlwy.net:50636/railway"
     )
     
     # Cloudinary Configuration
