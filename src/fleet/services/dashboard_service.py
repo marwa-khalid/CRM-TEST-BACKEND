@@ -688,31 +688,6 @@ def _missing_driver_documents(db: Session, tenant_id: Optional[int]) -> list:
             if not present:
                 items.append({"label": label, "registration": who, "hire_id": h.id})
 
-    # PCN Notice — the core required document on each Penalty Charge Notice. Flag any PCN
-    # whose notice hasn't been uploaded (the other PCN doc types are situational, not required).
-    from fleet.models.tables import FleetPcn, FleetPcnDocument
-
-    pcns = db.query(FleetPcn).filter(FleetPcn.hire_id.in_(ids)).all()
-    if pcns:
-        pcn_docs: dict = {}
-        for pid, dt in (
-            db.query(FleetPcnDocument.pcn_id, FleetPcnDocument.doc_type)
-            .filter(FleetPcnDocument.pcn_id.in_([p.id for p in pcns]))
-            .all()
-        ):
-            pcn_docs.setdefault(pid, set()).add((dt or "").strip())
-        for p in pcns:
-            num = (p.pcn_number or "").strip()
-            # Only real PCNs (identified by a PCN number) — skip empty placeholder rows so
-            # the list isn't padded with indistinguishable "PCN Notice" entries.
-            if not num:
-                continue
-            if "pcn_notice" not in pcn_docs.get(p.id, set()):
-                items.append({
-                    "label": f"PCN Notice — {num}",
-                    "registration": ref_by_hire.get(p.hire_id, "—"),
-                    "hire_id": p.hire_id,
-                })
     return items
 
 
