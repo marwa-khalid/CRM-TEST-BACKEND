@@ -167,4 +167,23 @@ def update_vehicle_record(
 def delete_vehicle_record(db: Session, record_id: int, tenant_id: int) -> None:
     record = get_vehicle_record_or_404(db, record_id, tenant_id)
     record.is_deleted = True
+    db.flush()
+    # Remove the shared register entry too, so a deleted vehicle disappears from the reg
+    # dropdowns and the Available count — unless another live record still uses the same reg.
+    from fleet.services import vehicle_service
+    from fleet.models.tables import FleetVehicleRegister
+
+    reg = vehicle_service._normalise_registration(record.registration_number)
+    if reg:
+        others = (
+            db.query(FleetVehicleRecord)
+            .filter(FleetVehicleRecord.id != record_id)
+            .filter(FleetVehicleRecord.is_deleted.isnot(True))
+            .all()
+        )
+        still_used = any(vehicle_service._normalise_registration(r.registration_number) == reg for r in others)
+        if not still_used:
+            for row in db.query(FleetVehicleRegister).all():
+                if vehicle_service._normalise_registration(row.registration_number) == reg:
+                    db.delete(row)
     db.commit()

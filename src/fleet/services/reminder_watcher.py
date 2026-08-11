@@ -437,7 +437,6 @@ def list_due_reminders(db: Session, side: str = "vehicles", today: Optional[date
         .filter(FleetVehicleRecord.is_deleted.isnot(True))
         .filter(FleetVehicleRecord.road_tax_expiry_date.isnot(None))
         .filter(FleetVehicleRecord.road_tax_expiry_date <= window_end)
-        .filter(FleetVehicleRecord.road_tax_expiry_date >= today)
         .all()
     )
     for record in records:

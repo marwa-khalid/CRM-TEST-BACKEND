@@ -11,7 +11,7 @@ from calendar import monthrange
 from datetime import date, timedelta
 from typing import List, Optional, Tuple
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from fleet.models.tables import (
@@ -155,7 +155,7 @@ def get_hire_trend(
         wk, cursor = 1, first
         while cursor < month_end:
             ranges.append((cursor, min(cursor + timedelta(days=7), month_end)))
-            labels.append(f"W{wk}")
+            labels.append(f"Week {wk}")
             cursor += timedelta(days=7)
             wk += 1
         caption = _month_label(first, True)
@@ -245,14 +245,9 @@ def _fleet_total(db: Session, tenant_id: Optional[int]) -> int:
 
 
 def _available_count(db: Session, tenant_id: Optional[int]) -> int:
-    """Vehicles whose status is 'Available' (same source as the donut)."""
-    q = db.query(func.count(FleetVehicleRecord.id)).filter(
-        FleetVehicleRecord.is_deleted.isnot(True),
-        func.lower(func.coalesce(FleetVehicleRecord.vehicle_status, "")) == "available",
-    )
-    if tenant_id is not None:
-        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    return q.scalar() or 0
+    """Vehicles genuinely available — status 'Available' in the effective list (which
+    already sends on-hire vehicles to Weekly Hire), so it matches the donut's Available."""
+    return sum(1 for v in _effective_vehicle_list(db, tenant_id) if v["status"] == "Available")
 
 
 def _income_between(db: Session, tenant_id: Optional[int], start: date, end: date) -> float:
@@ -310,21 +305,63 @@ def _delta(now: float, prev: float, higher_is_better: bool = True) -> Tuple[str,
     return f"{pct:.1f}", improved
 
 
-_STATUS_ORDER = ["Available", "On Hire", "Off Hire", "In Repair", "For Sale",
-                 "Skyline Hire", "Off Fleet", "Awaiting Plating", "Awaiting De-fleet"]
+_STATUS_ORDER = ["Available", "Weekly Hire", "In Service", "In Repair", "For Sale",
+                 "Off Fleet", "Awaiting Plating", "Awaiting De Fleet"]
 
 
 def _norm_reg(value: Optional[str]) -> str:
     return "".join(ch for ch in (value or "").upper() if ch.isalnum())
 
 
+# Canonical status so equivalent raw values merge into the Vehicle Details availability
+# labels — "on hire"/"on_hire" → "Weekly Hire", "off_hire"/"off fleet" → "Off Fleet", etc.
+def _canonical_status(raw: Optional[str]) -> str:
+    s = (raw or "").strip().lower().replace("_", " ")
+    if not s:
+        return "Available"
+    if s in ("on hire", "weekly hire"):
+        return "Weekly Hire"
+    if s in ("off hire", "off fleet"):
+        return "Off Fleet"
+    if s == "in service":
+        return "In Service"
+    if "repair" in s:
+        return "In Repair"
+    if s == "for sale":
+        return "For Sale"
+    if s == "awaiting plating":
+        return "Awaiting Plating"
+    if s in ("awaiting de fleet", "awaiting de-fleet"):
+        return "Awaiting De Fleet"
+    if s == "available":
+        return "Available"
+    return " ".join(w.capitalize() for w in s.split())
+
+
+_off_hired_column_ready = False
+
+
+def _ensure_off_hired_column(db: Session) -> None:
+    """Add fleet_vehicle_record.off_hired_on if missing (idempotent). This Fleet slice
+    has no alembic, so the column that powers the 'off-hired today' filter self-heals."""
+    global _off_hired_column_ready
+    if _off_hired_column_ready:
+        return
+    try:
+        db.execute(text("ALTER TABLE fleet_vehicle_record ADD COLUMN IF NOT EXISTS off_hired_on DATE"))
+        db.commit()
+    except Exception:
+        db.rollback()
+    _off_hired_column_ready = True
+
+
 def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
-    """Union of Vehicle Management records and hire vehicles, keyed by registration,
-    each carrying its *effective* status. A vehicle currently on/off hire (from
-    fleet_hire_vehicle) takes "On Hire"/"Off Hire" regardless of the record's stored
-    vehicle_status, and a hire vehicle with no matching record is still included — so
-    an on-hire (or off-hire) vehicle always shows on the dashboard. This is the shared
-    source for both the status donut and the "Skyline Vehicles" list, so they agree."""
+    """Union of Vehicle Management records and hire vehicles, keyed by registration, each
+    carrying its *effective* status. A vehicle currently on hire (from fleet_hire_vehicle)
+    reads "Weekly Hire" regardless of its stored vehicle_status; an off-hired vehicle reads
+    its own status (Available). Shared source for the status donut and the "Skyline
+    Vehicles" list, so they agree."""
+    _ensure_off_hired_column(db)
     by_reg: dict = {}
 
     q = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True))
@@ -337,8 +374,9 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
         by_reg[n] = {
             "registration": (v.registration_number or "").strip() or "—",
             "make": v.make, "model": v.model,
-            "status": (v.vehicle_status or "").strip() or "Available",
+            "status": _canonical_status(v.vehicle_status),
             "hire_id": None, "driver": None, "hire_start": None,
+            "off_hired_on": v.off_hired_on,
         }
 
     # Overlay hire vehicles — on_hire wins over off_hire wins over the record status.
@@ -351,17 +389,14 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
         hv_q = hv_q.filter(FleetHire.tenant_id == tenant_id)
     for hv, hire in hv_q.all():
         hs = (hv.hire_status or "").strip().lower()
-        if hs not in ("on_hire", "off_hire"):
-            continue
+        if hs != "on_hire":
+            continue  # off-hire no longer overlays — an off-hired vehicle reads Available
         n = _norm_reg(hv.registration_number)
         if not n:
             continue
-        label = "On Hire" if hs == "on_hire" else "Off Hire"
         cur = by_reg.get(n)
         if cur is not None:
-            if cur["status"] == "On Hire" and label == "Off Hire":
-                continue  # don't downgrade an already on-hire vehicle
-            cur["status"] = label
+            cur["status"] = "Weekly Hire"
             cur["hire_id"] = hire.id
             cur["driver"] = hire.driver_name
             cur["hire_start"] = hv.hire_start_date
@@ -372,24 +407,34 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
         else:
             by_reg[n] = {
                 "registration": (hv.registration_number or "").strip() or "—",
-                "make": hv.make, "model": hv.model, "status": label,
+                "make": hv.make, "model": hv.model, "status": "Weekly Hire",
                 "hire_id": hire.id, "driver": hire.driver_name, "hire_start": hv.hire_start_date,
+                "off_hired_on": None,
             }
     return sorted(by_reg.values(), key=lambda x: x["registration"])
 
 
+# Every status the donut legend surfaces, in order: the Vehicle Details "Vehicle Status"
+# dropdown. Live on-hire vehicles are counted as Weekly Hire; off-hire as Off Fleet.
+_DONUT_STATUSES = [
+    "Available", "Weekly Hire", "In Service", "In Repair",
+    "For Sale", "Off Fleet", "Awaiting Plating", "Awaiting De Fleet",
+]
+
+
 def get_vehicle_status(db: Session, tenant_id: Optional[int]) -> dict:
-    """Vehicle-status distribution for the donut. Counts the effective vehicle list
-    (records + hire on/off-hire), so On Hire / Off Hire vehicles are reflected. Known
-    statuses come first in a stable order, any others follow."""
-    counts: dict = {}
+    """Vehicle-status distribution for the donut: one bucket per Vehicle Details
+    availability status. Reads the same effective list the "Skyline Vehicles" section uses
+    (records + the live-hire overlay, so an on-hire vehicle reads Weekly Hire and an
+    off-hire one Off Fleet) so the two always agree. Every status is emitted (0 included)
+    so the legend always lists them all."""
+    counts = {k: 0 for k in _DONUT_STATUSES}
     for v in _effective_vehicle_list(db, tenant_id):
-        label = (v["status"] or "").strip()
-        if label:
-            counts[label] = counts.get(label, 0) + 1
-    segments = [{"label": s, "value": counts.pop(s)} for s in _STATUS_ORDER if s in counts]
-    segments += [{"label": s, "value": n} for s, n in counts.items()]
-    return {"total": sum(s["value"] for s in segments), "segments": segments}
+        counts[v["status"]] = counts.get(v["status"], 0) + 1
+    segments = [{"label": k, "value": counts.get(k, 0)} for k in _DONUT_STATUSES]
+    # Any status outside the known list (defensive) still shows, after the fixed ones.
+    segments += [{"label": k, "value": v} for k, v in counts.items() if k not in _DONUT_STATUSES]
+    return {"total": sum(counts.values()), "segments": segments}
 
 
 def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
@@ -403,20 +448,24 @@ def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
         model = " ".join(x for x in [v.get("make"), v.get("model")] if x) or "—"
         s = (v["status"] or "").strip()
         sl = s.lower()
-        if s == "On Hire":
+        if s in ("On Hire", "Weekly Hire"):
             key = "hire"
-        elif s == "Off Hire":
+        elif s in ("Off Hire", "Off Fleet"):
             key = "off"
         elif "repair" in sl:
             key = "repair"
+        elif s == "For Sale":
+            key = "sale"
         else:
             key = "available"
         item = {"registration": v["registration"], "model": model, "statusKey": key, "statusLabel": s or "Available"}
+        # Off-hired today (now Available) — powers the daily "Off Hire" filter on the dashboard.
+        item["offHiredToday"] = bool(v.get("off_hired_on") and v.get("off_hired_on") == today)
         if key == "hire":
             start = v.get("hire_start")
             if start:
                 days = max(0, (today - start).days)
-                item["hireInfo"] = f"On Hire for {days} Day{'s' if days != 1 else ''}"
+                item["hireInfo"] = f"Weekly Hire for {days} Day{'s' if days != 1 else ''}"
             if (v.get("driver") or "").strip():
                 item["customer"] = v["driver"].strip()
         items.append(item)
@@ -552,50 +601,118 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
     return cards
 
 
+# Driver "Documents Checklist" — the required items (Customer Insurance is Optional and
+# excluded). Each row: (label, checklist key, extra accepted doc_types, accepted prefixes).
+# Mirrors the frontend DocumentChecklist.matchesChecklistDoc so "uploaded" agrees with the UI.
+_DRIVER_CHECKLIST = [
+    ("Bank Statement", "checklist_bank_statement", (), ("bank_statement_",)),
+    ("Utility Bill", "checklist_utility_bill", ("firstUtility", "secondUtility", "first_utility", "second_utility"), ("utility_",)),
+    ("Driving Licence Front", "checklist_dl_front", ("driving_licence", "dlFront", "dl_front"), ()),
+    ("Driving Licence Back", "checklist_dl_back", ("dlBack", "dl_back"), ()),
+    ("Taxi Badge", "checklist_taxi_badge", ("taxi_badge",), ()),
+    ("Signed Rental Contract", "checklist_signed_rental_contract", (), ()),
+    ("Signed Check-Out Sheet", "checklist_signed_checkout_sheet", (), ()),
+    ("Signed Check-In Sheet", "checklist_signed_checkin_sheet", (), ()),
+]
+
+# Vehicle documents expected on a record (uploaded from its screens): V5C, MOT & Plate
+# certificates, and the service invoice. Each row: (label, accepted doc_type values).
+_VEHICLE_DOCS = [
+    ("V5C Document", {"v5c"}),
+    ("MOT Certificate", {"mot"}),
+    ("Plate Certificate", {"plating", "plate"}),
+    ("Service Invoice", {"service_invoice"}),
+]
+
+
 def _missing_documents(db: Session, tenant_id: Optional[int]) -> list:
-    """One item per missing required certificate (MOT / Plate) on a vehicle,
-    with the vehicle registration and its hire for click-through."""
-    q = (
-        db.query(
-            FleetVehicleRecord.registration_number,
-            FleetVehicleRecord.hire_id,
-            FleetVehicleLicensingAuthority.mot_certificate_name,
-            FleetVehicleLicensingAuthority.plating_certificate_name,
-        )
-        .join(FleetVehicleLicensingAuthority, FleetVehicleLicensingAuthority.vehicle_record_id == FleetVehicleRecord.id)
-        .filter(FleetVehicleRecord.is_deleted.isnot(True))
-        .filter(FleetVehicleLicensingAuthority.is_deleted.isnot(True))
-    )
+    """Every expected-but-not-uploaded vehicle document, one item per record × missing
+    doc type. Checks the whole fleet (not only vehicles that already have a licensing
+    row), so a record with nothing uploaded lists all of them."""
+    from fleet.models.tables import FleetVehicleDocument
+
+    q = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True))
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    records = q.all()
+    if not records:
+        return []
+    ids = [r.id for r in records]
+    have: dict = {}
+    for rid, dt in (
+        db.query(FleetVehicleDocument.vehicle_record_id, FleetVehicleDocument.doc_type)
+        .filter(FleetVehicleDocument.vehicle_record_id.in_(ids))
+        .all()
+    ):
+        have.setdefault(rid, set()).add((dt or "").strip().lower())
     items = []
-    for reg, hire_id, mot_cert, plate_cert in q.all():
-        if not (mot_cert or "").strip():
-            items.append({"label": "MOT Certificate", "registration": reg or "—", "hire_id": hire_id})
-        if not (plate_cert or "").strip():
-            items.append({"label": "Plate Certificate", "registration": reg or "—", "hire_id": hire_id})
+    for r in records:
+        reg = (r.registration_number or "").strip() or "—"
+        got = have.get(r.id, set())
+        for label, accepted in _VEHICLE_DOCS:
+            if not (got & accepted):
+                items.append({"label": label, "registration": reg, "hire_id": r.hire_id})
     return items
 
 
 def _missing_driver_documents(db: Session, tenant_id: Optional[int]) -> list:
-    """Driver-side missing / expired documents for the Skyline dashboard: the
-    hirer's driving licence and (for taxi drivers) taxi badge, one item each."""
-    today = date.today()
+    """Every expected-but-not-uploaded driver document (the hire's Documents Checklist),
+    one item per hire × missing item. Customer Insurance is optional and excluded."""
+    from fleet.models.tables import FleetHireDocument
+
     q = db.query(FleetHire).filter(FleetHire.is_deleted.isnot(True))
     if tenant_id is not None:
         q = q.filter(FleetHire.tenant_id == tenant_id)
+    hires = q.all()
+    if not hires:
+        return []
+    ids = [h.id for h in hires]
+    have: dict = {}
+    for hid, dt in (
+        db.query(FleetHireDocument.hire_id, FleetHireDocument.doc_type)
+        .filter(FleetHireDocument.hire_id.in_(ids))
+        .all()
+    ):
+        have.setdefault(hid, set()).add((dt or "").strip())
+    # Identify each skyline record by its reference (SK-HR-####) so rows are distinguishable.
+    ref_by_hire = {h.id: (h.fleet_reference or "").strip() or (h.driver_name or "").strip() or f"Hire #{h.id}" for h in hires}
     items = []
-    for h in q.all():
-        who = (h.driver_name or "").strip() or "—"
-        if not (h.driving_licence_number or "").strip():
-            items.append({"label": "Driving Licence", "registration": who, "hire_id": h.id})
-        elif h.driving_licence_end and h.driving_licence_end < today:
-            items.append({"label": "Driving Licence (Expired)", "registration": who, "hire_id": h.id})
-        if (h.hirer_type or "").strip().lower() == "taxi_driver":
-            if not (h.taxi_badge_number or "").strip():
-                items.append({"label": "Taxi Badge", "registration": who, "hire_id": h.id})
-            elif h.taxi_badge_expiry and h.taxi_badge_expiry < today:
-                items.append({"label": "Taxi Badge (Expired)", "registration": who, "hire_id": h.id})
+    for h in hires:
+        who = ref_by_hire[h.id]
+        got = have.get(h.id, set())
+        for label, key, extra, prefixes in _DRIVER_CHECKLIST:
+            present = any(
+                dt == key or dt in extra or any(dt.startswith(p) for p in prefixes)
+                for dt in got
+            )
+            if not present:
+                items.append({"label": label, "registration": who, "hire_id": h.id})
+
+    # PCN Notice — the core required document on each Penalty Charge Notice. Flag any PCN
+    # whose notice hasn't been uploaded (the other PCN doc types are situational, not required).
+    from fleet.models.tables import FleetPcn, FleetPcnDocument
+
+    pcns = db.query(FleetPcn).filter(FleetPcn.hire_id.in_(ids)).all()
+    if pcns:
+        pcn_docs: dict = {}
+        for pid, dt in (
+            db.query(FleetPcnDocument.pcn_id, FleetPcnDocument.doc_type)
+            .filter(FleetPcnDocument.pcn_id.in_([p.id for p in pcns]))
+            .all()
+        ):
+            pcn_docs.setdefault(pid, set()).add((dt or "").strip())
+        for p in pcns:
+            num = (p.pcn_number or "").strip()
+            # Only real PCNs (identified by a PCN number) — skip empty placeholder rows so
+            # the list isn't padded with indistinguishable "PCN Notice" entries.
+            if not num:
+                continue
+            if "pcn_notice" not in pcn_docs.get(p.id, set()):
+                items.append({
+                    "label": f"PCN Notice — {num}",
+                    "registration": ref_by_hire.get(p.hire_id, "—"),
+                    "hire_id": p.hire_id,
+                })
     return items
 
 
@@ -784,6 +901,56 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
     }
 
 
+def _ensure_snapshot_table(db: Session) -> None:
+    from fleet.models.tables import FleetAvailabilitySnapshot
+    try:
+        FleetAvailabilitySnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
+    except Exception:
+        db.rollback()
+
+
+def _record_availability_snapshot(db: Session, tenant_id: Optional[int], available_now: int, total: int) -> None:
+    """Upsert today's availability snapshot (one row per tenant per day) so the
+    month-over-month comparison can use real history instead of an estimate."""
+    from fleet.models.tables import FleetAvailabilitySnapshot
+    _ensure_snapshot_table(db)
+    try:
+        row = (
+            db.query(FleetAvailabilitySnapshot)
+            .filter(FleetAvailabilitySnapshot.tenant_id == tenant_id)
+            .filter(FleetAvailabilitySnapshot.snapshot_date == date.today())
+            .first()
+        )
+        if row is None:
+            db.add(FleetAvailabilitySnapshot(
+                tenant_id=tenant_id, snapshot_date=date.today(),
+                available_count=available_now, total_count=total,
+            ))
+        else:
+            row.available_count = available_now
+            row.total_count = total
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _availability_pct_as_of(db: Session, tenant_id: Optional[int], as_of: date) -> Optional[int]:
+    """Availability % from the snapshot on/just-before ``as_of`` — None if no snapshot
+    that old exists yet (history still building up)."""
+    from fleet.models.tables import FleetAvailabilitySnapshot
+    _ensure_snapshot_table(db)
+    row = (
+        db.query(FleetAvailabilitySnapshot)
+        .filter(FleetAvailabilitySnapshot.tenant_id == tenant_id)
+        .filter(FleetAvailabilitySnapshot.snapshot_date <= as_of)
+        .order_by(FleetAvailabilitySnapshot.snapshot_date.desc())
+        .first()
+    )
+    if row is None or not row.total_count:
+        return None
+    return round(row.available_count / row.total_count * 100)
+
+
 def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dict:
     """The four top stat cards. `period` (WTD | MTD | YTD) scopes the income
     window and sets the trend comparison to one week / month / year ago. Each
@@ -814,10 +981,14 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dic
     # Availability = share of the fleet whose status is 'Available' (matches the donut).
     available_now = _available_count(db, tenant_id)
     avail_now = round(available_now / total * 100) if total else 0
-    # No history for vehicle_status, so estimate the prior availability by assuming
-    # the vehicles that went on hire since then were 'Available' before.
-    available_prev = max(0, available_now + (on_hire_now - on_hire_prev))
-    avail_prev = round(available_prev / total * 100) if total else 0
+    # Record today's snapshot, then compare against the real snapshot from ~a period ago.
+    # Until that much history exists, fall back to estimating the prior availability from
+    # the on-hire delta.
+    _record_availability_snapshot(db, tenant_id, available_now, total)
+    avail_prev = _availability_pct_as_of(db, tenant_id, prev_asof)
+    if avail_prev is None:
+        available_prev = max(0, available_now + (on_hire_now - on_hire_prev))
+        avail_prev = round(available_prev / total * 100) if total else 0
 
     oh_pct, oh_up = _delta(on_hire_now, on_hire_prev)
     inc_pct, inc_up = _delta(income_now, income_prev)

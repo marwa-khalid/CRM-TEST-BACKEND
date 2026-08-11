@@ -279,6 +279,9 @@ class FleetVehicleRecord(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     # --- Section B: availability ---
     vehicle_status = Column(String(50), nullable=True)
     depot_branch = Column(String(100), nullable=True)
+    # Date the vehicle was last taken off hire (set when a hire ends; the vehicle
+    # becomes Available). Powers the dashboard's "today's off-hires" daily filter.
+    off_hired_on = Column(Date, nullable=True)
 
     # --- Road Fund License ---
     # Expiry is stored, not derived, so the reminder job can query it directly.
@@ -502,3 +505,16 @@ class FleetVehicleLocation(Base):
     plate_expiry = Column(Date, nullable=True)
     mot_expiry = Column(Date, nullable=True)
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+
+
+class FleetAvailabilitySnapshot(Base):
+    """Daily snapshot of fleet availability so the dashboard can show a *real*
+    month-over-month change (there is no per-status history otherwise). One row per
+    tenant per day; standalone table (no FK), self-seeded when first needed."""
+    __tablename__ = "fleet_availability_snapshot"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, index=True, nullable=True)
+    snapshot_date = Column(Date, index=True, nullable=False)
+    available_count = Column(Integer, nullable=False, default=0)
+    total_count = Column(Integer, nullable=False, default=0)

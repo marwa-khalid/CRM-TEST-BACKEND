@@ -148,6 +148,26 @@ def _set_register_activation(db: Session, registration_number: Optional[str], is
         db.add(FleetVehicleRegister(registration_number=normalised, make="", model="", is_active=True))
 
 
+def _sync_record_status_for_hire(db: Session, registration_number: Optional[str], on_hire: bool, hire_id: Optional[int] = None) -> None:
+    """Keep the registered vehicle in step with its hire: on hire → status 'weekly_hire'
+    and hire_id linked (so Current Hire Details can show the driver); off hire → status
+    'available' and hire_id cleared. No-op when no Vehicle Management record matches."""
+    from datetime import date as _date
+    from fleet.models.tables import FleetVehicleRecord
+
+    n = _normalise_registration(registration_number)
+    if not n:
+        return
+    for rec in db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True)).all():
+        if _normalise_registration(rec.registration_number) == n:
+            rec.vehicle_status = "weekly_hire" if on_hire else "available"
+            rec.hire_id = hire_id if on_hire else None
+            # Stamp the off-hire date (clear it when going back on hire) for the
+            # dashboard's "off-hired today" filter.
+            rec.off_hired_on = None if on_hire else _date.today()
+            break
+
+
 def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_id: int, data: dict) -> FleetHireVehicle:
     get_hire_or_404(db, hire_id, tenant_id)
     vehicle = (
@@ -167,8 +187,10 @@ def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_
 
     if data.get("hire_status") == "on_hire":
         _set_register_activation(db, vehicle.registration_number, True)
+        _sync_record_status_for_hire(db, vehicle.registration_number, True, vehicle.hire_id)
     elif data.get("hire_status") == "off_hire":
         _set_register_activation(db, vehicle.registration_number, False)
+        _sync_record_status_for_hire(db, vehicle.registration_number, False)
 
     db.commit()
     db.refresh(vehicle)
@@ -188,6 +210,7 @@ def delete_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_
 
     if vehicle.hire_status == "on_hire":
         _set_register_activation(db, vehicle.registration_number, False)
+        _sync_record_status_for_hire(db, vehicle.registration_number, False)
 
     db.delete(vehicle)
     db.flush()
