@@ -687,54 +687,60 @@ def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] =
     return cards
 
 
-def get_servicing_due(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
-    """Servicing Due card — distinct from the document-expiry cards. Service due =
-    last service + 6 months, bucketed Overdue / Weekly (≤7d) / Monthly (≤30d), and
-    each row carries the vehicle's mileage + driver rather than an expiry date."""
-    today = date.today()
-    d7, d30 = today + timedelta(days=7), today + timedelta(days=30)
+_service_mileage_ready = False
 
-    driver_by_reg: dict = {}
-    dq = (
-        db.query(FleetVehicleRecord.registration_number, FleetHire.driver_name)
-        .join(FleetHire, FleetVehicleRecord.hire_id == FleetHire.id)
-        .filter(FleetVehicleRecord.is_deleted.isnot(True))
-    )
-    if tenant_id is not None:
-        dq = dq.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    dq = _ctx(dq, context)
-    for reg, drv in dq.all():
-        if reg and drv and reg not in driver_by_reg:
-            driver_by_reg[reg] = drv
+
+def _ensure_service_mileage_columns(db: Session) -> None:
+    """Add the record's current_mileage / service_due_mileage columns if missing —
+    the mileage-based Servicing Due widget reads them. Self-heals (no alembic here)."""
+    global _service_mileage_ready
+    if _service_mileage_ready:
+        return
+    try:
+        db.execute(text("ALTER TABLE fleet_vehicle_record ADD COLUMN IF NOT EXISTS current_mileage INTEGER"))
+        db.execute(text("ALTER TABLE fleet_vehicle_record ADD COLUMN IF NOT EXISTS service_due_mileage INTEGER"))
+        db.commit()
+    except Exception:
+        db.rollback()
+    _service_mileage_ready = True
+
+
+def get_servicing_due(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
+    """Servicing Due card — mileage-based (distinct from the date-driven document
+    cards). For each vehicle:  remaining = service_due_mileage − current_mileage.
+    Bucketed Overdue (past the service odometer) / Due within 500 mi / Due within
+    1,000 mi; each row carries the current mileage, the service-due odometer and a
+    status label. Vehicles further than 1,000 miles out aren't surfaced."""
+    _ensure_service_mileage_columns(db)
 
     q = (
         db.query(
             FleetVehicleRecord.registration_number,
-            FleetVehicleService.serviced_on,
-            FleetVehicleService.serviced_at_mileage,
+            FleetVehicleRecord.current_mileage,
+            FleetVehicleRecord.service_due_mileage,
         )
-        .join(FleetVehicleService, FleetVehicleService.vehicle_record_id == FleetVehicleRecord.id)
         .filter(FleetVehicleRecord.is_deleted.isnot(True))
-        .filter(FleetVehicleService.is_deleted.isnot(True))
-        .filter(FleetVehicleService.serviced_on.isnot(None))
+        .filter(FleetVehicleRecord.current_mileage.isnot(None))
+        .filter(FleetVehicleRecord.service_due_mileage.isnot(None))
     )
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
     q = _ctx(q, context)
 
-    rows: dict = {"overdue": [], "weekly": [], "monthly": []}
-    for reg, serviced_on, mileage in sorted(q.all(), key=lambda r: r[1] + timedelta(days=182)):
-        due = serviced_on + timedelta(days=182)
-        days = (due - today).days
+    rows: dict = {"overdue": [], "within_500": [], "within_1000": []}
+    # Soonest-due first (smallest remaining, i.e. most overdue, at the top).
+    computed = [(reg, cur, due, due - cur) for reg, cur, due in q.all()]
+    for reg, cur, due, remaining in sorted(computed, key=lambda r: r[3]):
         vreg = reg or "—"
-        vmile = (mileage or "").strip() or "—"
-        vdrv = driver_by_reg.get(reg, "—")
-        if due < today:
-            rows["overdue"].append([vreg, vmile, [f"{abs(days)} days overdue", "red"], vdrv])
-        elif due <= d7:
-            rows["weekly"].append([vreg, vmile, ["Today" if days == 0 else f"{days} days", "orange"], vdrv])
-        elif due <= d30:
-            rows["monthly"].append([vreg, vmile, [f"{days} days", "violet"], vdrv])
+        cur_s, due_s = f"{cur:,}", f"{due:,}"
+        if remaining < 0:
+            rows["overdue"].append([vreg, cur_s, due_s, [f"{abs(remaining):,} miles overdue", "red"]])
+        elif remaining <= 500:
+            label = "Service Due" if remaining == 0 else f"{remaining:,} miles remaining"
+            rows["within_500"].append([vreg, cur_s, due_s, [label, "orange"]])
+        elif remaining <= 1000:
+            rows["within_1000"].append([vreg, cur_s, due_s, [f"{remaining:,} miles remaining", "violet"]])
+        # remaining > 1,000 → not surfaced
 
     return {
         "tabs": {k: len(v) for k, v in rows.items()},

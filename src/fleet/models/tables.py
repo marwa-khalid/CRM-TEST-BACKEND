@@ -285,6 +285,12 @@ class FleetVehicleRecord(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     # Date the vehicle was last taken off hire (set when a hire ends; the vehicle
     # becomes Available). Powers the dashboard's "today's off-hires" daily filter.
     off_hired_on = Column(Date, nullable=True)
+    # Current odometer + the mileage the next service is due at. Stored on the record
+    # (fleets seeded from the client's own list have no hires to derive a live reading
+    # from) so the dashboard's mileage-based Servicing Due widget can compute
+    # miles-remaining = service_due_mileage - current_mileage.
+    current_mileage = Column(Integer, nullable=True)
+    service_due_mileage = Column(Integer, nullable=True)
 
     # --- Road Fund License ---
     # Expiry is stored, not derived, so the reminder job can query it directly.
