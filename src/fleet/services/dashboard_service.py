@@ -210,6 +210,8 @@ def _to_float(value) -> float:
 def _shift_period(d: date, period: str) -> date:
     """`d` moved back exactly one period (a week / month / year), clamping the
     day so e.g. 31 Mar → 28/29 Feb never overflows."""
+    if period == "TDY":
+        return d - timedelta(days=1)
     if period == "WTD":
         return d - timedelta(weeks=1)
     if period == "YTD":
@@ -246,7 +248,7 @@ def _fleet_total(db: Session, tenant_id: Optional[int]) -> int:
 
 def _available_count(db: Session, tenant_id: Optional[int]) -> int:
     """Vehicles genuinely available — status 'Available' in the effective list (which
-    already sends on-hire vehicles to Weekly Hire), so it matches the donut's Available."""
+    already sends on-hire vehicles to On Hire), so it matches the donut's Available."""
     return sum(1 for v in _effective_vehicle_list(db, tenant_id) if v["status"] == "Available")
 
 
@@ -305,7 +307,7 @@ def _delta(now: float, prev: float, higher_is_better: bool = True) -> Tuple[str,
     return f"{pct:.1f}", improved
 
 
-_STATUS_ORDER = ["Available", "Weekly Hire", "In Service", "In Repair", "For Sale",
+_STATUS_ORDER = ["Available", "On Hire", "In Service", "In Repair", "For Sale",
                  "Off Fleet", "Awaiting Plating", "Awaiting De Fleet"]
 
 
@@ -314,13 +316,13 @@ def _norm_reg(value: Optional[str]) -> str:
 
 
 # Canonical status so equivalent raw values merge into the Vehicle Details availability
-# labels — "on hire"/"on_hire" → "Weekly Hire", "off_hire"/"off fleet" → "Off Fleet", etc.
+# labels — "on hire"/"on_hire" → "On Hire", "off_hire"/"off fleet" → "Off Fleet", etc.
 def _canonical_status(raw: Optional[str]) -> str:
     s = (raw or "").strip().lower().replace("_", " ")
     if not s:
         return "Available"
     if s in ("on hire", "weekly hire"):
-        return "Weekly Hire"
+        return "On Hire"
     if s in ("off hire", "off fleet"):
         return "Off Fleet"
     if s == "in service":
@@ -358,7 +360,7 @@ def _ensure_off_hired_column(db: Session) -> None:
 def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
     """Union of Vehicle Management records and hire vehicles, keyed by registration, each
     carrying its *effective* status. A vehicle currently on hire (from fleet_hire_vehicle)
-    reads "Weekly Hire" regardless of its stored vehicle_status; an off-hired vehicle reads
+    reads "On Hire" regardless of its stored vehicle_status; an off-hired vehicle reads
     its own status (Available). Shared source for the status donut and the "Skyline
     Vehicles" list, so they agree."""
     _ensure_off_hired_column(db)
@@ -396,7 +398,7 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
             continue
         cur = by_reg.get(n)
         if cur is not None:
-            cur["status"] = "Weekly Hire"
+            cur["status"] = "On Hire"
             cur["hire_id"] = hire.id
             cur["driver"] = hire.driver_name
             cur["hire_start"] = hv.hire_start_date
@@ -407,7 +409,7 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
         else:
             by_reg[n] = {
                 "registration": (hv.registration_number or "").strip() or "—",
-                "make": hv.make, "model": hv.model, "status": "Weekly Hire",
+                "make": hv.make, "model": hv.model, "status": "On Hire",
                 "hire_id": hire.id, "driver": hire.driver_name, "hire_start": hv.hire_start_date,
                 "off_hired_on": None,
             }
@@ -415,9 +417,9 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
 
 
 # Every status the donut legend surfaces, in order: the Vehicle Details "Vehicle Status"
-# dropdown. Live on-hire vehicles are counted as Weekly Hire; off-hire as Off Fleet.
+# dropdown. Live on-hire vehicles are counted as On Hire; off-hire as Off Fleet.
 _DONUT_STATUSES = [
-    "Available", "Weekly Hire", "In Service", "In Repair",
+    "Available", "On Hire", "In Service", "In Repair",
     "For Sale", "Off Fleet", "Awaiting Plating", "Awaiting De Fleet",
 ]
 
@@ -425,7 +427,7 @@ _DONUT_STATUSES = [
 def get_vehicle_status(db: Session, tenant_id: Optional[int]) -> dict:
     """Vehicle-status distribution for the donut: one bucket per Vehicle Details
     availability status. Reads the same effective list the "Skyline Vehicles" section uses
-    (records + the live-hire overlay, so an on-hire vehicle reads Weekly Hire and an
+    (records + the live-hire overlay, so an on-hire vehicle reads On Hire and an
     off-hire one Off Fleet) so the two always agree. Every status is emitted (0 included)
     so the legend always lists them all."""
     counts = {k: 0 for k in _DONUT_STATUSES}
@@ -465,7 +467,7 @@ def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
             start = v.get("hire_start")
             if start:
                 days = max(0, (today - start).days)
-                item["hireInfo"] = f"Weekly Hire for {days} Day{'s' if days != 1 else ''}"
+                item["hireInfo"] = f"On Hire for {days} Day{'s' if days != 1 else ''}"
             if (v.get("driver") or "").strip():
                 item["customer"] = v["driver"].strip()
         items.append(item)
@@ -524,6 +526,12 @@ def get_compliance(db: Session, tenant_id: Optional[int]) -> dict:
     result = []
     for key, title in _COMPLIANCE_TITLES:
         items = cats.get(key, [])
+        # Service Due should only "count" once it's actually approaching: a vehicle
+        # serviced recently (next service months out) falls in no filter window
+        # (overdue / 7d / 30d), so it must not inflate the total either.
+        if key == "service":
+            horizon = today + timedelta(days=30)
+            items = [(reg, e) for reg, e in items if e <= horizon]
         total = len(items)
         denom = total or 1
         overdue = sum(1 for _, e in items if e < today)
@@ -544,10 +552,10 @@ def _remaining_label(expiry: date, today: date):
     if days < 0:
         return "Expired", "red"
     if days == 0:
-        return "Today", "orange"
+        return "Today", "gray"
     if days <= 7:
         return f"{days} days", "orange"
-    return f"{days} days", "green"
+    return f"{days} days", "violet"
 
 
 _EXPIRY_TITLES = [("road_fund", "Road Fund Licence"), ("mot", "MOT Expiry"), ("plate", "Plate Expiry")]
@@ -587,7 +595,7 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
             driver_by_reg[reg] = drv
 
     cards: dict = {}
-    for key, _title in _EXPIRY_TITLES:
+    for key, _title in _EXPIRY_TITLES + [("service", "Service")]:
         items = sorted(cats.get(key, []), key=lambda x: x[1])
         rows: dict = {"expired": [], "today": [], "d7": [], "d30": []}
         for reg, e in items:
@@ -824,7 +832,7 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
         q = q.filter(FleetHire.tenant_id == tenant_id)
 
     # Rows are grouped by bucket so the dashboard tabs can filter to one bucket.
-    buckets: dict = {"due_today": [], "due_this_week": [], "overdue": [], "received_today": []}
+    buckets: dict = {"due_today": [], "due_this_week": [], "overdue": [], "received_today": [], "all": []}
 
     def _row(reg, cust, due_amt, outstanding, due, label, tone):
         return (due, [reg, cust, f"£{due_amt:,.2f}", f"£{outstanding:,.2f}",
@@ -861,11 +869,24 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
                 buckets["overdue"].append(_row(reg, cust, due_amt, outstanding, due, "Overdue", "red"))
                 amt["overdue"] += outstanding
 
+        # Every payment, whatever its state — powers the always-on "View All" list.
+        if not owed:
+            a_label, a_tone = "Received", "green"
+        elif due and due == today:
+            a_label, a_tone = "Due Today", "gray"
+        elif due and today < due <= week_end:
+            a_label, a_tone = "Due This Week", "yellow"
+        elif due and due < today:
+            a_label, a_tone = "Overdue", "red"
+        else:
+            a_label, a_tone = "Upcoming", "gray"
+        buckets["all"].append(_row(reg, cust, due_amt, outstanding, due, a_label, a_tone))
+
     total = amt["overdue"] + amt["due_today"] + amt["due_this_week"] + amt["received"]
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     return {
         "tabs": {k: len(v) for k, v in buckets.items()},
-        "rows": {k: [r[1] for r in sorted(v, key=lambda x: (x[0] or today))][:10] for k, v in buckets.items()},
+        "rows": {k: [r[1] for r in sorted(v, key=lambda x: (x[0] or today))][: (1000 if k == "all" else 10)] for k, v in buckets.items()},
         "summary": {
             "total": f"£{total:,.0f}",
             "overdue": f"£{amt['overdue']:,.0f}",
@@ -932,12 +953,14 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dic
     card carries a stable `key` the frontend maps to its icon; `up` means the
     change was favourable (for Urgent Alerts, fewer is favourable)."""
     period = (period or "MTD").upper()
-    if period not in ("WTD", "MTD", "YTD"):
+    if period not in ("TDY", "WTD", "MTD", "YTD"):
         period = "MTD"
     today = date.today()
     now_end = today + timedelta(days=1)
 
-    if period == "WTD":
+    if period == "TDY":
+        win_start, compare = today, "vs yesterday"
+    elif period == "WTD":
         win_start, compare = today - timedelta(days=today.weekday()), "vs last week"
     elif period == "YTD":
         win_start, compare = date(today.year, 1, 1), "vs last year"
@@ -971,7 +994,7 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dic
     ur_pct, ur_up = _delta(urgent_now, urgent_prev, higher_is_better=False)
 
     # Sub-labels + progress bars for the Fleet Performance card.
-    period_sub = {"WTD": "Week to date", "MTD": "Month to date", "YTD": "Year to date"}.get(period, "Month to date")
+    period_sub = {"TDY": "Today", "WTD": "Week to date", "MTD": "Month to date", "YTD": "Year to date"}.get(period, "Month to date")
     oh_progress = round(on_hire_now / total * 100) if total else 0
     inc_progress = max(0, min(100, round(50 + (float(inc_pct) if inc_up else -float(inc_pct)) / 2)))
 
