@@ -450,7 +450,7 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int], context: Opti
             "registration": (v.registration_number or "").strip() or "—",
             "make": v.make, "model": v.model,
             "status": _canonical_status(v.vehicle_status),
-            "hire_id": None, "driver": None, "hire_start": None,
+            "hire_id": None, "driver": None, "hire_start": None, "reference": None,
             "off_hired_on": v.off_hired_on,
         }
 
@@ -475,6 +475,7 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int], context: Opti
             cur["hire_id"] = hire.id
             cur["driver"] = hire.driver_name
             cur["hire_start"] = hv.hire_start_date
+            cur["reference"] = hire.fleet_reference
             if not (cur.get("make") or "").strip():
                 cur["make"] = hv.make
             if not (cur.get("model") or "").strip():
@@ -486,7 +487,7 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int], context: Opti
                 "registration": (hv.registration_number or "").strip() or "—",
                 "make": hv.make, "model": hv.model, "status": "On Hire",
                 "hire_id": hire.id, "driver": hire.driver_name, "hire_start": hv.hire_start_date,
-                "off_hired_on": None,
+                "reference": hire.fleet_reference, "off_hired_on": None,
             }
     return sorted(by_reg.values(), key=lambda x: x["registration"])
 
@@ -546,6 +547,8 @@ def get_fleet_vehicles(db: Session, tenant_id: Optional[int], context: Optional[
                 item["hireInfo"] = f"On Hire for {days} Day{'s' if days != 1 else ''}"
             if (v.get("driver") or "").strip():
                 item["customer"] = v["driver"].strip()
+            if (v.get("reference") or "").strip():
+                item["reference"] = v["reference"].strip()
         items.append(item)
     return {"items": items}
 
@@ -1154,7 +1157,8 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
     # how many vehicles went on hire today, not how many are currently on hire.
     on_hire_now = _on_hire_started_on(db, tenant_id, today, ctx)
     on_hire_prev = _on_hire_started_on(db, tenant_id, prev_asof, ctx)
-    current_on_hire_now = sum(1 for v in _effective_vehicle_list(db, tenant_id, ctx) if v["status"] == "On Hire")
+    _eff = _effective_vehicle_list(db, tenant_id, ctx)
+    current_on_hire_now = sum(1 for v in _eff if v["status"] == "On Hire")
     current_on_hire_prev = _on_hire_as_of(db, tenant_id, prev_asof, ctx)
     total = _fleet_total(db, tenant_id, ctx)
     income_now = _income_between(db, tenant_id, win_start, now_end)
@@ -1182,24 +1186,25 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
         )
         urgent_prev = urgent_now
 
-    # Availability = share of the fleet whose status is 'Available' (matches the donut).
-    available_now = _available_count(db, tenant_id, ctx)
-    avail_now = round(available_now / total * 100) if total else 0
+    # Fleet Utilization = every vehicle NOT on hire and NOT for sale, over the total fleet.
+    util_count = sum(1 for v in _eff if v["status"] not in ("On Hire", "For Sale"))
+    util_now = round(util_count / total * 100) if total else 0
     # Record today's snapshot, then compare against the real snapshot from ~a period ago.
-    # Until that much history exists, fall back to estimating the prior availability from
-    # the on-hire delta. Scoped VM views don't touch the tenant-wide snapshot.
+    # Until that much history exists, estimate the prior figure from the on-hire delta
+    # (a vehicle going on hire leaves the utilised set). Scoped VM views don't touch the
+    # tenant-wide snapshot.
     if ctx:
-        avail_prev = None
+        util_prev_pct = None
     else:
-        _record_availability_snapshot(db, tenant_id, available_now, total)
-        avail_prev = _availability_pct_as_of(db, tenant_id, prev_asof)
-    if avail_prev is None:
-        available_prev = max(0, available_now + (current_on_hire_now - current_on_hire_prev))
-        avail_prev = round(available_prev / total * 100) if total else 0
+        _record_availability_snapshot(db, tenant_id, util_count, total)
+        util_prev_pct = _availability_pct_as_of(db, tenant_id, prev_asof)
+    if util_prev_pct is None:
+        util_prev = max(0, util_count + (current_on_hire_now - current_on_hire_prev))
+        util_prev_pct = round(util_prev / total * 100) if total else 0
 
     oh_pct, oh_up = _delta(on_hire_now, on_hire_prev)
     inc_pct, inc_up = _delta(income_now, income_prev)
-    av_pct, av_up = _delta(avail_now, avail_prev)
+    av_pct, av_up = _delta(util_now, util_prev_pct)
     ur_pct, ur_up = _delta(urgent_now, urgent_prev, higher_is_better=False)
 
     # Sub-labels + progress bars for the Fleet Performance card.
@@ -1215,8 +1220,8 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
              "sub": f"of {total} active vehicles", "progress": oh_progress},
             {"key": "net_income", "label": f"Net Income ({period})", "value": f"£{income_now:,.0f}", "pct": inc_pct, "up": inc_up,
              "sub": period_sub, "progress": inc_progress},
-            {"key": "fleet_availability", "label": "Fleet Availability", "value": f"{avail_now}%", "pct": av_pct, "up": av_up,
-             "sub": f"{available_now} vehicles available now", "progress": avail_now},
+            {"key": "fleet_availability", "label": "Fleet Utilization", "value": f"{util_now}%", "pct": av_pct, "up": av_up,
+             "sub": f"{util_count} of {total} vehicles", "progress": util_now},
             {"key": "urgent_alerts", "label": "Urgent Alerts", "value": str(urgent_now), "pct": ur_pct, "up": ur_up,
              "sub": "needs action", "progress": 0},
         ],
