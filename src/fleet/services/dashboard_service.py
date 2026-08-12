@@ -609,6 +609,59 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
     return cards
 
 
+def get_servicing_due(db: Session, tenant_id: Optional[int]) -> dict:
+    """Servicing Due card — distinct from the document-expiry cards. Service due =
+    last service + 6 months, bucketed Overdue / Weekly (≤7d) / Monthly (≤30d), and
+    each row carries the vehicle's mileage + driver rather than an expiry date."""
+    today = date.today()
+    d7, d30 = today + timedelta(days=7), today + timedelta(days=30)
+
+    driver_by_reg: dict = {}
+    dq = (
+        db.query(FleetVehicleRecord.registration_number, FleetHire.driver_name)
+        .join(FleetHire, FleetVehicleRecord.hire_id == FleetHire.id)
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
+    )
+    if tenant_id is not None:
+        dq = dq.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    for reg, drv in dq.all():
+        if reg and drv and reg not in driver_by_reg:
+            driver_by_reg[reg] = drv
+
+    q = (
+        db.query(
+            FleetVehicleRecord.registration_number,
+            FleetVehicleService.serviced_on,
+            FleetVehicleService.serviced_at_mileage,
+        )
+        .join(FleetVehicleService, FleetVehicleService.vehicle_record_id == FleetVehicleRecord.id)
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
+        .filter(FleetVehicleService.is_deleted.isnot(True))
+        .filter(FleetVehicleService.serviced_on.isnot(None))
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+
+    rows: dict = {"overdue": [], "weekly": [], "monthly": []}
+    for reg, serviced_on, mileage in sorted(q.all(), key=lambda r: r[1] + timedelta(days=182)):
+        due = serviced_on + timedelta(days=182)
+        days = (due - today).days
+        vreg = reg or "—"
+        vmile = (mileage or "").strip() or "—"
+        vdrv = driver_by_reg.get(reg, "—")
+        if due < today:
+            rows["overdue"].append([vreg, vmile, [f"{abs(days)} days overdue", "red"], vdrv])
+        elif due <= d7:
+            rows["weekly"].append([vreg, vmile, ["Today" if days == 0 else f"{days} days", "orange"], vdrv])
+        elif due <= d30:
+            rows["monthly"].append([vreg, vmile, [f"{days} days", "violet"], vdrv])
+
+    return {
+        "tabs": {k: len(v) for k, v in rows.items()},
+        "rows": {k: v[:50] for k, v in rows.items()},
+    }
+
+
 # Driver "Documents Checklist" — the required items (Customer Insurance is Optional and
 # excluded). Each row: (label, checklist key, extra accepted doc_types, accepted prefixes).
 # Mirrors the frontend DocumentChecklist.matchesChecklistDoc so "uploaded" agrees with the UI.

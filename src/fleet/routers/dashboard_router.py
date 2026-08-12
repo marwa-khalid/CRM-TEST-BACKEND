@@ -47,6 +47,15 @@ def stats_route(
     return dashboard_service.get_stats(db, tenant_id, period=period, module=module or None)
 
 
+@router.get("/dashboard/servicing-due")
+def servicing_due_route(
+    db: Session = Depends(get_session),
+    tenant_id: int = Depends(get_tenant_id),
+):
+    """Servicing Due card — Overdue / Weekly / Monthly buckets with vehicle mileage."""
+    return dashboard_service.get_servicing_due(db, tenant_id)
+
+
 @router.get("/dashboard/vehicle-status")
 def vehicle_status_route(
     db: Session = Depends(get_session),
