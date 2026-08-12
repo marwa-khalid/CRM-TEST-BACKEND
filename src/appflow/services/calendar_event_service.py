@@ -260,6 +260,10 @@ class CalendarEventService:
         # in the Skyline or Vehicle Management calendars.
         if module:
             mods = [s.strip() for s in module.split(",") if s.strip()]
+            # Legacy Vehicle Management events used module="vehicles" before the
+            # VM side split. Keep them Skyline-only; CAMS remains separate.
+            if "vehicles_skyline" in mods and "vehicles" not in mods:
+                mods.append("vehicles")
             q = q.filter(CalendarEvent.module.in_(mods))
         if assigned_user:
             terms = [s.strip() for s in assigned_user.split(",") if s.strip()]
@@ -488,7 +492,7 @@ class CalendarEventService:
         db: Session, *, tenant_id, source_type: str, source_ref_id: int,
         title: str, event_type: str, start_date, start_time=None,
         claim_id=None, claim_reference=None, vehicle_registration=None,
-        task_id=None, assigned_users=None, status=None, remove=False,
+        task_id=None, assigned_users=None, status=None, module=None, remove=False,
     ):
         """Upsert (or remove) a system-generated calendar event tied to a source
         record. Pass start_date=None (or remove=True) to remove the event — e.g.
@@ -518,6 +522,7 @@ class CalendarEventService:
             ev.start_time = start_time
             ev.claim_id, ev.claim_reference = claim_id, claim_reference
             ev.vehicle_registration, ev.task_id = vehicle_registration, task_id
+            ev.module = module
             if assigned_users is not None:
                 ev.assigned_users = _join(assigned_users)
             if status is not None:
@@ -529,6 +534,7 @@ class CalendarEventService:
                 claim_id=claim_id, claim_reference=claim_reference,
                 vehicle_registration=vehicle_registration, task_id=task_id,
                 assigned_users=_join(assigned_users),
+                module=module,
                 source="system", source_type=source_type, source_ref_id=source_ref_id,
             )
             db.add(ev)

@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
@@ -30,19 +30,21 @@ router = APIRouter()
 
 @router.post("/vehicle-record", response_model=VehicleRecordResponse)
 def create_vehicle_record_route(
+    context: Optional[str] = Body(None, embed=True),
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
     actor: int = Depends(actor_id),
 ):
-    return vehicle_record_service.create_vehicle_record(db, tenant_id, actor)
+    return vehicle_record_service.create_vehicle_record(db, tenant_id, actor, context)
 
 
 @router.get("/vehicle-record", response_model=List[VehicleRecordResponse])
 def list_vehicle_records_route(
+    context: Optional[str] = None,
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    return vehicle_record_service.list_vehicle_records(db, tenant_id)
+    return vehicle_record_service.list_vehicle_records(db, tenant_id, context)
 
 
 @router.get("/vehicle-record/{record_id}", response_model=VehicleRecordResponse)

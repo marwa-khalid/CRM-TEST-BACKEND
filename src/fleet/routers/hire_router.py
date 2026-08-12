@@ -25,12 +25,13 @@ def list_due_reminders_route(
 
 @router.get("/reminders/expiries")
 def list_expiries_route(
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
     """All vehicle expiries (road fund / plate / MOT) with their actual dates —
     used to plot them on the Fleet calendar. Not limited to the due window."""
-    return reminder_watcher.list_all_expiries(db)
+    return reminder_watcher.list_all_expiries(db, context=context or None)
 
 
 @router.post("/hire", response_model=HireResponse)

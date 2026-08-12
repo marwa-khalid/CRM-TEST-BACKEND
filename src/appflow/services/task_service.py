@@ -61,7 +61,7 @@ def _notify_task_assigned(db: Session, task: Task, current_user, title: str = "N
     # tab stays Tasks / High Priority so they land in the right tab, not "Fleet".
     is_fleet = (getattr(task, "department", "") or "").strip().lower() == "fleet"
     # A vehicle-module task routes to the Vehicle Management notification feed.
-    is_vehicles = (getattr(task, "module", "") or "").strip().lower() == "vehicles"
+    is_vehicles = (getattr(task, "module", "") or "").strip().lower().startswith("vehicles")
     ref = f" ({task.claim_reference})" if task.claim_reference else ""
     suffix = f" Reason: {reason}" if reason else ""
     safe_notify(
@@ -101,7 +101,7 @@ def _sync_task_due_event(db: Session, task: Task) -> None:
             claim_id=task.claim_id, claim_reference=task.claim_reference,
             vehicle_registration=task.vehicle_registration, task_id=task.id,
             assigned_users=[task.assigned_user] if task.assigned_user else None,
-            status=cal_status, remove=remove,
+            status=cal_status, module=task.module, remove=remove,
         )
     except Exception:
         db.rollback()
@@ -227,7 +227,12 @@ class TaskService:
         # match keeps the three apps cleanly separate — Claims tasks (module NULL)
         # never surface in the Skyline or Vehicle Management lists.
         if module:
-            q = q.filter(Task.module.in_(_split(module)))
+            modules = _split(module)
+            # Legacy VM tasks used module="vehicles" before CAMS/Skyline were split.
+            # Treat those as Skyline-only so CAMS never sees them.
+            if "vehicles_skyline" in modules and "vehicles" not in modules:
+                modules.append("vehicles")
+            q = q.filter(Task.module.in_(modules))
         if assigned_user:
             q = q.filter(Task.assigned_user.in_(_split(assigned_user)))
         if claim_reference:

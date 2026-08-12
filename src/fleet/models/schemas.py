@@ -301,6 +301,7 @@ class FleetVehicleRegisterUpsert(BaseModel):
     # Shared Claims⇄Skyline on-hire flag. Optional so existing make/model sync
     # callers (which omit it) leave availability untouched via exclude_unset.
     is_active: Optional[bool] = None
+    context: Optional[str] = None  # cams | skyline (which VM side owns the plate)
 
 
 class PcnUpdate(BaseModel):

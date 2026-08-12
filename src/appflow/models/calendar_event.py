@@ -38,6 +38,7 @@ class CalendarEventOut(BaseModel):
     end_time: Optional[str] = None
     assigned_users: List[str] = []
     department: Optional[str] = None
+    module: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
     reminder: Optional[str] = None

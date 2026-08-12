@@ -236,6 +236,7 @@ class FleetVehicleRegister(Base, AuditStampMixin):
     model = Column(String(100), nullable=False)
     transmission = Column(String(50), nullable=True)
     is_active = Column(Boolean, nullable=False, server_default="false")
+    context = Column(String(20), nullable=True, index=True)  # cams | skyline (which VM side owns the plate)
 
 
 class FleetVehicleRecord(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
@@ -252,6 +253,8 @@ class FleetVehicleRecord(Base, AuditStampMixin, AuditByMixin, SoftDeleteMixin):
     tenant_id = Column(Integer, index=True, nullable=True)
     # One vehicle record per hire file — this is the Customer Side of the same record.
     hire_id = Column(Integer, ForeignKey("fleet_hire.id", ondelete="CASCADE"), index=True, nullable=True)
+    # Which Vehicle Management side owns this car: "cams" (Claims) or "skyline".
+    context = Column(String(20), nullable=True, index=True)
 
     # --- Section A: classification (chosen by the user, never OCR'd) ---
     obtained_for_purpose = Column(String(100), nullable=True)

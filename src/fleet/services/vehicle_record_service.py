@@ -7,6 +7,7 @@ read from the most recent hire that used this registration.
 from typing import List, Optional
 
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from fleet.models.tables import FleetHireVehicle, FleetVehicleRecord
@@ -62,8 +63,31 @@ def _attach_mileage(db: Session, record: FleetVehicleRecord) -> FleetVehicleReco
     return record
 
 
-def create_vehicle_record(db: Session, tenant_id: int, actor: Optional[int] = None) -> FleetVehicleRecord:
-    record = FleetVehicleRecord(tenant_id=tenant_id, created_by=actor, updated_by=actor)
+_context_column_ready = False
+
+
+def _ensure_context_column(db: Session) -> None:
+    """Add fleet_vehicle_record.context if missing and tag any legacy (untagged) rows
+    as Skyline. Self-heals (no alembic in this slice); runs once per process."""
+    global _context_column_ready
+    if _context_column_ready:
+        return
+    try:
+        db.execute(text("ALTER TABLE fleet_vehicle_record ADD COLUMN IF NOT EXISTS context VARCHAR(20)"))
+        db.execute(text("UPDATE fleet_vehicle_record SET context = 'skyline' WHERE context IS NULL"))
+        db.commit()
+    except Exception:
+        db.rollback()
+    _context_column_ready = True
+
+
+def create_vehicle_record(
+    db: Session, tenant_id: int, actor: Optional[int] = None, context: Optional[str] = None,
+) -> FleetVehicleRecord:
+    _ensure_context_column(db)
+    record = FleetVehicleRecord(
+        tenant_id=tenant_id, created_by=actor, updated_by=actor, context=(context or "skyline"),
+    )
     db.add(record)
     db.commit()
     db.refresh(record)
@@ -95,14 +119,19 @@ def get_or_create_for_hire(
     return _attach_mileage(db, record)
 
 
-def list_vehicle_records(db: Session, tenant_id: int) -> List[FleetVehicleRecord]:
-    records = (
+def list_vehicle_records(
+    db: Session, tenant_id: int, context: Optional[str] = None,
+) -> List[FleetVehicleRecord]:
+    _ensure_context_column(db)
+    q = (
         db.query(FleetVehicleRecord)
         .filter(FleetVehicleRecord.is_deleted.isnot(True))
         .filter(FleetVehicleRecord.tenant_id == tenant_id)
-        .order_by(FleetVehicleRecord.id.desc())
-        .all()
     )
+    if context:
+        # Legacy rows were migrated to "skyline", so an explicit filter is exact.
+        q = q.filter(FleetVehicleRecord.context == context)
+    records = q.order_by(FleetVehicleRecord.id.desc()).all()
     return [_attach_mileage(db, r) for r in records]
 
 
@@ -131,6 +160,21 @@ def update_vehicle_record(
     actor: Optional[int] = None,
 ) -> FleetVehicleRecord:
     record = get_vehicle_record_or_404(db, record_id, tenant_id)
+    # A registration number identifies one physical car — it must be unique across all
+    # vehicle records (both VM sides). Reject a clashing reg before saving.
+    new_reg = payload.get("registration_number")
+    if new_reg and str(new_reg).strip():
+        from fleet.services import vehicle_service
+        target = vehicle_service._normalise_registration(new_reg)
+        others = (
+            db.query(FleetVehicleRecord)
+            .filter(FleetVehicleRecord.id != record_id)
+            .filter(FleetVehicleRecord.is_deleted.isnot(True))
+            .filter(FleetVehicleRecord.tenant_id == tenant_id)
+            .all()
+        )
+        if any(vehicle_service._normalise_registration(o.registration_number) == target for o in others):
+            raise HTTPException(status_code=409, detail=f"A vehicle with registration '{new_reg}' already exists.")
     for field, value in payload.items():
         if hasattr(record, field):
             setattr(record, field, value)
@@ -157,6 +201,7 @@ def update_vehicle_record(
                     "make": record.make,
                     "model": record.model,
                     "transmission": record.transmission,
+                    "context": record.context,
                 },
             )
         except Exception:

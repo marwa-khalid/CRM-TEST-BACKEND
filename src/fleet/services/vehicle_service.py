@@ -2,7 +2,7 @@
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from fleet.models.tables import FleetHire, FleetHireVehicle, FleetVehicleRegister
@@ -28,7 +28,24 @@ def list_vehicles(db: Session, hire_id: int, tenant_id: Optional[int]):
     )
 
 
-def list_vehicle_register(db: Session):
+_register_context_column_ready = False
+
+
+def _ensure_register_context_column(db: Session) -> None:
+    """Add fleet_vehicle_register.context if missing (self-heals; no alembic here)."""
+    global _register_context_column_ready
+    if _register_context_column_ready:
+        return
+    try:
+        db.execute(text("ALTER TABLE fleet_vehicle_register ADD COLUMN IF NOT EXISTS context VARCHAR(20)"))
+        db.commit()
+    except Exception:
+        db.rollback()
+    _register_context_column_ready = True
+
+
+def list_vehicle_register(db: Session, context: Optional[str] = None):
+    _ensure_register_context_column(db)
     # is_active is the shared on-hire flag, but it can drift from reality — a hire
     # can be marked on_hire before its register row exists, so the row is either
     # missing or left inactive (this is why a vehicle can read "On Hire" on the
@@ -71,11 +88,10 @@ def list_vehicle_register(db: Session):
     if changed:
         db.commit()
 
-    return (
-        db.query(FleetVehicleRegister)
-        .order_by(FleetVehicleRegister.registration_number.asc())
-        .all()
-    )
+    q = db.query(FleetVehicleRegister)
+    if context:
+        q = q.filter(FleetVehicleRegister.context == context)
+    return q.order_by(FleetVehicleRegister.registration_number.asc()).all()
 
 
 def _normalise_registration(value: Optional[str]) -> str:
@@ -99,6 +115,7 @@ def upsert_vehicle_register(db: Session, data: dict) -> FleetVehicleRegister:
             make=data.get("make") or "",
             model=data.get("model") or "",
             transmission=data.get("transmission") or None,
+            context=data.get("context"),
             # is_active is the shared Claims⇄Skyline on-hire flag. Honour it when the
             # caller sends it (Claims toggles availability through this endpoint);
             # existing Fleet make/model sync calls omit it and default to free.
@@ -115,6 +132,8 @@ def upsert_vehicle_register(db: Session, data: dict) -> FleetVehicleRegister:
             row.transmission = data.get("transmission") or None
         if "is_active" in data:
             row.is_active = bool(data.get("is_active"))
+        if data.get("context"):
+            row.context = data.get("context")
 
     db.commit()
     db.refresh(row)

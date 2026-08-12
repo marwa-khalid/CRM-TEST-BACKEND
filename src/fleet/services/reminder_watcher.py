@@ -51,6 +51,11 @@ def _vehicle_label(record: FleetVehicleRecord) -> str:
     return reg or make_model or f"Vehicle #{record.id}"
 
 
+def _vehicle_module(record: FleetVehicleRecord) -> str:
+    context = (getattr(record, "context", None) or "skyline").strip() or "skyline"
+    return f"vehicles_{context}"
+
+
 def _due_phrase(expiry: date, today: date) -> str:
     days = (expiry - today).days
     if days < 0:
@@ -75,6 +80,7 @@ def sync_expiry_event(
     expiry: Optional[date],
     registration: Optional[str] = None,
     actor: Optional[int] = None,
+    module: str = "vehicles_skyline",
 ) -> None:
     """Upsert (or remove) the system calendar event for one expiry.
 
@@ -101,7 +107,7 @@ def sync_expiry_event(
             end_date=expiry,
             description=description,
             vehicle_registration=(registration or None),
-            module="vehicles",  # vehicle expiries belong to Vehicle Management
+            module=module,  # vehicle expiries belong to Vehicle Management
             source="system",
             source_type=source_type,
             source_ref_id=source_ref_id,
@@ -138,6 +144,7 @@ def sync_authority_events(
         expiry=authority.plating_expiry_date,
         registration=record.registration_number,
         actor=actor,
+        module=_vehicle_module(record),
     )
     sync_expiry_event(
         db,
@@ -153,6 +160,7 @@ def sync_authority_events(
         expiry=authority.mot_expiry_date,
         registration=record.registration_number,
         actor=actor,
+        module=_vehicle_module(record),
     )
 
 
@@ -353,12 +361,14 @@ def process_mileage_reminders(db: Session, today: Optional[date] = None) -> Dict
                 ),
                 expiry=(record.mileage_obtained_on or today),
                 registration=record.registration_number,
+                module=_vehicle_module(record),
             )
         elif not want_reminder and existing_event:
             sync_expiry_event(
                 db, tenant_id=record.tenant_id, source_type=SERVICE_DUE_EVENT,
                 source_ref_id=svc.id, title="", description="", expiry=None,
                 registration=record.registration_number,
+                module=_vehicle_module(record),
             )
 
         if not want_reminder:
@@ -487,7 +497,7 @@ def list_due_reminders(db: Session, side: str = "vehicles", today: Optional[date
     return out
 
 
-def list_all_expiries(db: Session) -> List[Dict]:
+def list_all_expiries(db: Session, context: Optional[str] = None) -> List[Dict]:
     """Every vehicle expiry (road fund / plate / MOT) with its actual date, for
     the Fleet calendar.
 
@@ -499,12 +509,14 @@ def list_all_expiries(db: Session) -> List[Dict]:
     """
     out: List[Dict] = []
 
-    records = (
+    records_q = (
         db.query(FleetVehicleRecord)
         .filter(FleetVehicleRecord.is_deleted.isnot(True))
         .filter(FleetVehicleRecord.road_tax_expiry_date.isnot(None))
-        .all()
     )
+    if context:
+        records_q = records_q.filter(FleetVehicleRecord.context == context)
+    records = records_q.all()
     def _make_model(rec) -> str:
         return " ".join(p for p in ((rec.make or "").strip(), (rec.model or "").strip()) if p)
 
@@ -520,11 +532,15 @@ def list_all_expiries(db: Session) -> List[Dict]:
             "hire_id": record.hire_id,
         })
 
-    authorities = (
+    authorities_q = (
         db.query(FleetVehicleLicensingAuthority)
+        .join(FleetVehicleRecord, FleetVehicleRecord.id == FleetVehicleLicensingAuthority.vehicle_record_id)
         .filter(FleetVehicleLicensingAuthority.is_deleted.isnot(True))
-        .all()
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
     )
+    if context:
+        authorities_q = authorities_q.filter(FleetVehicleRecord.context == context)
+    authorities = authorities_q.all()
     records_by_id: Dict[int, FleetVehicleRecord] = {}
     for authority in authorities:
         record = records_by_id.get(authority.vehicle_record_id)

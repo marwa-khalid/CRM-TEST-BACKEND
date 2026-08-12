@@ -224,10 +224,37 @@ def _shift_period(d: date, period: str) -> date:
     return date(year, month, min(d.day, monthrange(year, month)[1]))
 
 
-def _on_hire_as_of(db: Session, tenant_id: Optional[int], as_of: date) -> int:
+def _normalise_context(value: Optional[str]) -> Optional[str]:
+    ctx = (value or "").strip().lower().replace("-", "_")
+    if ctx.startswith("vehicles_"):
+        ctx = ctx.split("_", 1)[1]
+    return ctx or None
+
+
+def _vehicle_record_regs_for_context(db: Session, tenant_id: Optional[int], context: Optional[str]) -> Optional[set]:
+    ctx = _normalise_context(context)
+    if not ctx:
+        return None
+    q = (
+        db.query(FleetVehicleRecord.registration_number)
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
+        .filter(func.lower(func.trim(func.coalesce(FleetVehicleRecord.context, ""))) == ctx)
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    return {_norm_reg(row[0]) for row in q.all() if _norm_reg(row[0])}
+
+
+def _count_hire_vehicle_rows(q, allowed_regs: Optional[set]) -> int:
+    if allowed_regs is None:
+        return q.with_entities(func.count(FleetHireVehicle.id)).scalar() or 0
+    return sum(1 for (reg,) in q.with_entities(FleetHireVehicle.registration_number).all() if _norm_reg(reg) in allowed_regs)
+
+
+def _on_hire_as_of(db: Session, tenant_id: Optional[int], as_of: date, context: Optional[str] = None) -> int:
     """Vehicles under an active hire on `as_of` (started on/before, not yet ended)."""
     q = (
-        db.query(func.count(FleetHireVehicle.id))
+        db.query(FleetHireVehicle)
         .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
         .filter(FleetHire.is_deleted.isnot(True))
         .filter(FleetHireVehicle.hire_start_date.isnot(None))
@@ -236,20 +263,43 @@ def _on_hire_as_of(db: Session, tenant_id: Optional[int], as_of: date) -> int:
     )
     if tenant_id is not None:
         q = q.filter(FleetHire.tenant_id == tenant_id)
-    return q.scalar() or 0
+    return _count_hire_vehicle_rows(q, _vehicle_record_regs_for_context(db, tenant_id, context))
 
 
-def _fleet_total(db: Session, tenant_id: Optional[int]) -> int:
+def _on_hire_started_on(db: Session, tenant_id: Optional[int], day: date, context: Optional[str] = None) -> int:
+    """Vehicles that were put on hire on exactly `day`.
+
+    This is an event count, not a current-status count: if the vehicle was also
+    off-hired later the same day, it still "went on hire today".
+    """
+    q = (
+        db.query(FleetHireVehicle)
+        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+        .filter(FleetHireVehicle.hire_start_date == day)
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetHire.tenant_id == tenant_id)
+    return _count_hire_vehicle_rows(q, _vehicle_record_regs_for_context(db, tenant_id, context))
+
+
+def _ctx(q, context: Optional[str]):
+    """Scope a FleetVehicleRecord query to one VM side (cams / skyline) when given."""
+    ctx = _normalise_context(context)
+    return q.filter(func.lower(func.trim(func.coalesce(FleetVehicleRecord.context, ""))) == ctx) if ctx else q
+
+
+def _fleet_total(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> int:
     q = db.query(func.count(FleetVehicleRecord.id)).filter(FleetVehicleRecord.is_deleted.isnot(True))
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    return q.scalar() or 0
+    return (_ctx(q, context)).scalar() or 0
 
 
-def _available_count(db: Session, tenant_id: Optional[int]) -> int:
+def _available_count(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> int:
     """Vehicles genuinely available — status 'Available' in the effective list (which
     already sends on-hire vehicles to On Hire), so it matches the donut's Available."""
-    return sum(1 for v in _effective_vehicle_list(db, tenant_id) if v["status"] == "Available")
+    return sum(1 for v in _effective_vehicle_list(db, tenant_id, context) if v["status"] == "Available")
 
 
 def _income_between(db: Session, tenant_id: Optional[int], start: date, end: date) -> float:
@@ -268,7 +318,7 @@ def _income_between(db: Session, tenant_id: Optional[int], start: date, end: dat
     return sum(_to_float(row[0]) for row in q.all())
 
 
-def _overdue_expiries_as_of(db: Session, tenant_id: Optional[int], as_of: date) -> int:
+def _overdue_expiries_as_of(db: Session, tenant_id: Optional[int], as_of: date, context: Optional[str] = None) -> int:
     """Road-tax / plate / MOT expiries already lapsed on `as_of`."""
     rt = db.query(func.count(FleetVehicleRecord.id)).filter(
         FleetVehicleRecord.is_deleted.isnot(True),
@@ -277,6 +327,7 @@ def _overdue_expiries_as_of(db: Session, tenant_id: Optional[int], as_of: date) 
     )
     if tenant_id is not None:
         rt = rt.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    rt = _ctx(rt, context)
 
     authority = (
         db.query(FleetVehicleLicensingAuthority)
@@ -286,6 +337,7 @@ def _overdue_expiries_as_of(db: Session, tenant_id: Optional[int], as_of: date) 
     )
     if tenant_id is not None:
         authority = authority.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    authority = _ctx(authority, context)
     plate = authority.filter(
         FleetVehicleLicensingAuthority.plating_expiry_date.isnot(None),
         FleetVehicleLicensingAuthority.plating_expiry_date < as_of,
@@ -295,6 +347,22 @@ def _overdue_expiries_as_of(db: Session, tenant_id: Optional[int], as_of: date) 
         FleetVehicleLicensingAuthority.mot_expiry_date < as_of,
     ).count()
     return (rt.scalar() or 0) + plate + mot
+
+
+def _overdue_service_as_of(db: Session, tenant_id: Optional[int], as_of: date, context: Optional[str] = None) -> int:
+    """Vehicles whose latest service date is more than 6 months before `as_of`."""
+    q = (
+        db.query(FleetVehicleRecord.id, func.max(FleetVehicleService.serviced_on))
+        .join(FleetVehicleService, FleetVehicleService.vehicle_record_id == FleetVehicleRecord.id)
+        .filter(FleetVehicleRecord.is_deleted.isnot(True))
+        .filter(FleetVehicleService.is_deleted.isnot(True))
+        .filter(FleetVehicleService.serviced_on.isnot(None))
+        .group_by(FleetVehicleRecord.id)
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    q = _ctx(q, context)
+    return sum(1 for _, serviced_on in q.all() if serviced_on and serviced_on + timedelta(days=182) < as_of)
 
 
 def _delta(now: float, prev: float, higher_is_better: bool = True) -> Tuple[str, bool]:
@@ -357,18 +425,23 @@ def _ensure_off_hired_column(db: Session) -> None:
     _off_hired_column_ready = True
 
 
-def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
+def _effective_vehicle_list(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> list:
     """Union of Vehicle Management records and hire vehicles, keyed by registration, each
     carrying its *effective* status. A vehicle currently on hire (from fleet_hire_vehicle)
     reads "On Hire" regardless of its stored vehicle_status; an off-hired vehicle reads
     its own status (Available). Shared source for the status donut and the "Skyline
-    Vehicles" list, so they agree."""
+    Vehicles" list, so they agree.
+
+    When `context` is given (a VM side — cams / skyline) the list is that side's records
+    only: the hire overlay then just marks those records On Hire and never introduces a
+    hire vehicle that isn't one of the side's cars."""
     _ensure_off_hired_column(db)
     by_reg: dict = {}
 
     q = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True))
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    q = _ctx(q, context)
     for v in q.all():
         n = _norm_reg(v.registration_number)
         if not n:
@@ -406,7 +479,9 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int]) -> list:
                 cur["make"] = hv.make
             if not (cur.get("model") or "").strip():
                 cur["model"] = hv.model
-        else:
+        elif not context:
+            # Fleet-wide view: a live hire whose reg isn't a stored record still counts.
+            # Scoped to a VM side, a non-record hire vehicle isn't one of that side's cars.
             by_reg[n] = {
                 "registration": (hv.registration_number or "").strip() or "—",
                 "make": hv.make, "model": hv.model, "status": "On Hire",
@@ -424,14 +499,14 @@ _DONUT_STATUSES = [
 ]
 
 
-def get_vehicle_status(db: Session, tenant_id: Optional[int]) -> dict:
+def get_vehicle_status(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """Vehicle-status distribution for the donut: one bucket per Vehicle Details
     availability status. Reads the same effective list the "Skyline Vehicles" section uses
     (records + the live-hire overlay, so an on-hire vehicle reads On Hire and an
     off-hire one Off Fleet) so the two always agree. Every status is emitted (0 included)
     so the legend always lists them all."""
     counts = {k: 0 for k in _DONUT_STATUSES}
-    for v in _effective_vehicle_list(db, tenant_id):
+    for v in _effective_vehicle_list(db, tenant_id, context):
         counts[v["status"]] = counts.get(v["status"], 0) + 1
     segments = [{"label": k, "value": counts.get(k, 0)} for k in _DONUT_STATUSES]
     # Any status outside the known list (defensive) still shows, after the fixed ones.
@@ -439,14 +514,15 @@ def get_vehicle_status(db: Session, tenant_id: Optional[int]) -> dict:
     return {"total": sum(counts.values()), "segments": segments}
 
 
-def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
+def get_fleet_vehicles(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """Live vehicle list for the dashboard's "Skyline Vehicles" section — the same
     effective list the status donut counts (records + hire on/off-hire). On-hire and
     off-hire vehicles read as such (never "Available"), and on-hire carries the driver
-    + how long it's been out. Empty when there are no vehicles or hires."""
+    + how long it's been out. Empty when there are no vehicles or hires. ``context``
+    (cams | skyline) scopes to one Vehicle Management side."""
     today = date.today()
     items = []
-    for v in _effective_vehicle_list(db, tenant_id):
+    for v in _effective_vehicle_list(db, tenant_id, context):
         model = " ".join(x for x in [v.get("make"), v.get("model")] if x) or "—"
         s = (v["status"] or "").strip()
         sl = s.lower()
@@ -475,13 +551,14 @@ def get_fleet_vehicles(db: Session, tenant_id: Optional[int]) -> dict:
 
 
 # ── Compliance + expiry cards (Road Fund / Plate / MOT / Service) ─────────────
-def _expiry_dates_by_category(db: Session, tenant_id: Optional[int]) -> dict:
+def _expiry_dates_by_category(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """{'road_fund'|'plate'|'mot'|'service': [(registration, expiry_date), …]}.
     Road tax lives on the vehicle record, plate/MOT on the licensing authority,
     and 'service due' is derived as the last service date + a 6-month interval."""
     def _scoped(q):
         q = q.filter(FleetVehicleRecord.is_deleted.isnot(True))
-        return q.filter(FleetVehicleRecord.tenant_id == tenant_id) if tenant_id is not None else q
+        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id) if tenant_id is not None else q
+        return _ctx(q, context)
 
     out: dict = {"road_fund": [], "plate": [], "mot": [], "service": []}
 
@@ -518,11 +595,11 @@ def _expiry_dates_by_category(db: Session, tenant_id: Optional[int]) -> dict:
 _COMPLIANCE_TITLES = [("mot", "MOT"), ("plate", "Plate"), ("road_fund", "Road Fund Licence"), ("service", "Service")]
 
 
-def get_compliance(db: Session, tenant_id: Optional[int]) -> dict:
+def get_compliance(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """Per-category compliance: overdue count, % overdue (bar), and counts due
     within 7 and within 30 days."""
     today = date.today()
-    cats = _expiry_dates_by_category(db, tenant_id)
+    cats = _expiry_dates_by_category(db, tenant_id, context)
     result = []
     for key, title in _COMPLIANCE_TITLES:
         items = cats.get(key, [])
@@ -561,7 +638,7 @@ def _remaining_label(expiry: date, today: date):
 _EXPIRY_TITLES = [("road_fund", "Road Fund Licence"), ("mot", "MOT Expiry"), ("plate", "Plate Expiry")]
 
 
-def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
+def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """Per-category expiry cards. Rows are grouped by bucket (expired / today /
     7 days / 30 days) so the dashboard tabs can filter to a single bucket; tab
     counts are the bucket sizes."""
@@ -579,7 +656,7 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
             return "d30"
         return None  # further-future expiries aren't surfaced
 
-    cats = _expiry_dates_by_category(db, tenant_id)
+    cats = _expiry_dates_by_category(db, tenant_id, context)
 
     # reg -> driver name (via the vehicle's current hire), for the card/slider.
     driver_by_reg: dict = {}
@@ -590,6 +667,7 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
     )
     if tenant_id is not None:
         dq = dq.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    dq = _ctx(dq, context)
     for reg, drv in dq.all():
         if reg and drv and reg not in driver_by_reg:
             driver_by_reg[reg] = drv
@@ -609,7 +687,7 @@ def get_expiries(db: Session, tenant_id: Optional[int]) -> dict:
     return cards
 
 
-def get_servicing_due(db: Session, tenant_id: Optional[int]) -> dict:
+def get_servicing_due(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """Servicing Due card — distinct from the document-expiry cards. Service due =
     last service + 6 months, bucketed Overdue / Weekly (≤7d) / Monthly (≤30d), and
     each row carries the vehicle's mileage + driver rather than an expiry date."""
@@ -624,6 +702,7 @@ def get_servicing_due(db: Session, tenant_id: Optional[int]) -> dict:
     )
     if tenant_id is not None:
         dq = dq.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    dq = _ctx(dq, context)
     for reg, drv in dq.all():
         if reg and drv and reg not in driver_by_reg:
             driver_by_reg[reg] = drv
@@ -641,6 +720,7 @@ def get_servicing_due(db: Session, tenant_id: Optional[int]) -> dict:
     )
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    q = _ctx(q, context)
 
     rows: dict = {"overdue": [], "weekly": [], "monthly": []}
     for reg, serviced_on, mileage in sorted(q.all(), key=lambda r: r[1] + timedelta(days=182)):
@@ -686,7 +766,7 @@ _VEHICLE_DOCS = [
 ]
 
 
-def _missing_documents(db: Session, tenant_id: Optional[int]) -> list:
+def _missing_documents(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> list:
     """Every expected-but-not-uploaded vehicle document, one item per record × missing
     doc type. Checks the whole fleet (not only vehicles that already have a licensing
     row), so a record with nothing uploaded lists all of them."""
@@ -695,6 +775,7 @@ def _missing_documents(db: Session, tenant_id: Optional[int]) -> list:
     q = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True))
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    q = _ctx(q, context)
     records = q.all()
     if not records:
         return []
@@ -752,20 +833,21 @@ def _missing_driver_documents(db: Session, tenant_id: Optional[int]) -> list:
     return items
 
 
-def _missing_docs_for_side(db: Session, tenant_id: Optional[int], side: str) -> list:
-    """Skyline → driver documents; Vehicle Management (default) → vehicle documents."""
+def _missing_docs_for_side(db: Session, tenant_id: Optional[int], side: str, context: Optional[str] = None) -> list:
+    """Skyline → driver documents; Vehicle Management (default) → vehicle documents.
+    `context` scopes the vehicle-document check to one VM side (cams / skyline)."""
     if (side or "").strip().lower() == "skyline":
         return _missing_driver_documents(db, tenant_id)
-    return _missing_documents(db, tenant_id)
+    return _missing_documents(db, tenant_id, context)
 
 
-def get_missing_documents(db: Session, tenant_id: Optional[int], side: str = "vehicles") -> dict:
+def get_missing_documents(db: Session, tenant_id: Optional[int], side: str = "vehicles", context: Optional[str] = None) -> dict:
     """Full list of missing documents for the Attention slider — vehicle docs for
     Vehicle Management, driver docs (driving licence / taxi badge) for Skyline."""
-    return {"items": _missing_docs_for_side(db, tenant_id, side)}
+    return {"items": _missing_docs_for_side(db, tenant_id, side, context)}
 
 
-def get_attention(db: Session, tenant_id: Optional[int], side: str = "vehicles") -> dict:
+def get_attention(db: Session, tenant_id: Optional[int], side: str = "vehicles", context: Optional[str] = None) -> dict:
     """The three Attention-Required tiles: vehicles out past their return date,
     documents missing (vehicle docs for VM / driver docs for Skyline), and hire
     payments past due."""
@@ -784,7 +866,7 @@ def get_attention(db: Session, tenant_id: Optional[int], side: str = "vehicles")
 
     return {
         "overdue_returns": returns_q.scalar() or 0,
-        "missing_documents": len(_missing_docs_for_side(db, tenant_id, side)),
+        "missing_documents": len(_missing_docs_for_side(db, tenant_id, side, context)),
         "overdue_payments": get_weekly_payments(db, tenant_id)["tabs"]["overdue"],
     }
 
@@ -1014,19 +1096,20 @@ def _overdue_returns_count(db: Session, tenant_id: Optional[int]) -> int:
     return q.scalar() or 0
 
 
-def _overdue_tasks_count(db: Session, tenant_id: Optional[int], module: Optional[str] = None) -> int:
+def _overdue_tasks_count(db: Session, tenant_id: Optional[int], module: Optional[str] = None, as_of: Optional[date] = None) -> int:
     from libdata.models.tables import Task
+    cutoff = as_of or date.today()
     q = (
         db.query(func.count(Task.id))
         .filter(Task.is_deleted.is_(False))
         .filter(Task.due_date.isnot(None))
-        .filter(Task.due_date < date.today())
+        .filter(Task.due_date < cutoff)
         .filter(func.lower(func.coalesce(Task.status, "")) != "completed")
     )
     if tenant_id is not None:
         q = q.filter(Task.tenant_id == tenant_id)
     if module:
-        q = q.filter(Task.module == module)
+        q = q.filter(func.lower(func.trim(func.coalesce(Task.module, ""))) == module.strip().lower())
     return q.scalar() or 0
 
 
@@ -1053,18 +1136,38 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
     prev_asof = _shift_period(today, period)
     prev_win_start = _shift_period(win_start, period)
 
-    # "Vehicles on Hire" must match the donut/listing (status-based), not the hire window.
-    on_hire_now = sum(1 for v in _effective_vehicle_list(db, tenant_id) if v["status"] == "On Hire")
-    on_hire_prev = _on_hire_as_of(db, tenant_id, prev_asof)
-    total = _fleet_total(db, tenant_id)
+    # Vehicle Management is its own module now, one per side: "vehicles_cams" /
+    # "vehicles_skyline". Everything past "vehicles_" is the VM side (context) the
+    # vehicle metrics scope to; the plain Skyline dashboard passes module "skyline"
+    # (no VM context → fleet-wide figures).
+    module_l = (module or "").strip().lower()
+    is_vm = module_l.startswith("vehicles")
+    ctx = _normalise_context(module_l) if is_vm else None
+
+    # Fleet Performance "Vehicles on Hire" is a daily event count:
+    # how many vehicles went on hire today, not how many are currently on hire.
+    on_hire_now = _on_hire_started_on(db, tenant_id, today, ctx)
+    on_hire_prev = _on_hire_started_on(db, tenant_id, prev_asof, ctx)
+    current_on_hire_now = sum(1 for v in _effective_vehicle_list(db, tenant_id, ctx) if v["status"] == "On Hire")
+    current_on_hire_prev = _on_hire_as_of(db, tenant_id, prev_asof, ctx)
+    total = _fleet_total(db, tenant_id, ctx)
     income_now = _income_between(db, tenant_id, win_start, now_end)
     income_prev = _income_between(db, tenant_id, prev_win_start, win_start)
-    # Urgent Alerts — side-aware. Vehicle Management keeps its original meaning:
-    # overdue vehicle compliance (road tax / plate / MOT). Skyline = overdue returns
-    # + overdue payments + overdue tasks.
-    if (module or "").lower() == "vehicles":
-        urgent_now = _overdue_expiries_as_of(db, tenant_id, today)
-        urgent_prev = _overdue_expiries_as_of(db, tenant_id, prev_asof)
+    # Urgent Alerts — side-aware. Vehicle Management counts overdue MOT, plate,
+    # road licence, service, and overdue VM tasks for that side's cars.
+    # Skyline = overdue returns + overdue payments + overdue tasks.
+    if is_vm:
+        vm_task_module = f"vehicles_{ctx}" if ctx else "vehicles"
+        urgent_now = (
+            _overdue_expiries_as_of(db, tenant_id, today, ctx)
+            + _overdue_service_as_of(db, tenant_id, today, ctx)
+            + _overdue_tasks_count(db, tenant_id, vm_task_module, today)
+        )
+        urgent_prev = (
+            _overdue_expiries_as_of(db, tenant_id, prev_asof, ctx)
+            + _overdue_service_as_of(db, tenant_id, prev_asof, ctx)
+            + _overdue_tasks_count(db, tenant_id, vm_task_module, prev_asof)
+        )
     else:
         urgent_now = (
             _overdue_returns_count(db, tenant_id)
@@ -1074,15 +1177,18 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
         urgent_prev = urgent_now
 
     # Availability = share of the fleet whose status is 'Available' (matches the donut).
-    available_now = _available_count(db, tenant_id)
+    available_now = _available_count(db, tenant_id, ctx)
     avail_now = round(available_now / total * 100) if total else 0
     # Record today's snapshot, then compare against the real snapshot from ~a period ago.
     # Until that much history exists, fall back to estimating the prior availability from
-    # the on-hire delta.
-    _record_availability_snapshot(db, tenant_id, available_now, total)
-    avail_prev = _availability_pct_as_of(db, tenant_id, prev_asof)
+    # the on-hire delta. Scoped VM views don't touch the tenant-wide snapshot.
+    if ctx:
+        avail_prev = None
+    else:
+        _record_availability_snapshot(db, tenant_id, available_now, total)
+        avail_prev = _availability_pct_as_of(db, tenant_id, prev_asof)
     if avail_prev is None:
-        available_prev = max(0, available_now + (on_hire_now - on_hire_prev))
+        available_prev = max(0, available_now + (current_on_hire_now - current_on_hire_prev))
         avail_prev = round(available_prev / total * 100) if total else 0
 
     oh_pct, oh_up = _delta(on_hire_now, on_hire_prev)

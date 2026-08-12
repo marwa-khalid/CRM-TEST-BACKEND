@@ -49,29 +49,35 @@ def stats_route(
 
 @router.get("/dashboard/servicing-due")
 def servicing_due_route(
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Servicing Due card — Overdue / Weekly / Monthly buckets with vehicle mileage."""
-    return dashboard_service.get_servicing_due(db, tenant_id)
+    """Servicing Due card — Overdue / Weekly / Monthly buckets with vehicle mileage.
+    ``context`` (cams | skyline) scopes to one Vehicle Management side."""
+    return dashboard_service.get_servicing_due(db, tenant_id, context=context or None)
 
 
 @router.get("/dashboard/vehicle-status")
 def vehicle_status_route(
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Vehicle-status distribution for the donut."""
-    return dashboard_service.get_vehicle_status(db, tenant_id)
+    """Vehicle-status distribution for the donut. ``context`` (cams | skyline) scopes
+    to one Vehicle Management side."""
+    return dashboard_service.get_vehicle_status(db, tenant_id, context=context or None)
 
 
 @router.get("/dashboard/vehicles")
 def fleet_vehicles_route(
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Live vehicle list for the "Skyline Vehicles" section (status + hire info)."""
-    return dashboard_service.get_fleet_vehicles(db, tenant_id)
+    """Live vehicle list for the "Skyline Vehicles" section (status + hire info).
+    ``context`` (cams | skyline) scopes to one Vehicle Management side."""
+    return dashboard_service.get_fleet_vehicles(db, tenant_id, context=context or None)
 
 
 @router.get("/dashboard/weekly-payments")
@@ -85,42 +91,50 @@ def weekly_payments_route(
 
 @router.get("/dashboard/compliance")
 def compliance_route(
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Per-category compliance summary (MOT / Plate / Road Fund / Service)."""
-    return dashboard_service.get_compliance(db, tenant_id)
+    """Per-category compliance summary (MOT / Plate / Road Fund / Service).
+    ``context`` (cams | skyline) scopes to one Vehicle Management side."""
+    return dashboard_service.get_compliance(db, tenant_id, context=context or None)
 
 
 @router.get("/dashboard/expiries")
 def expiries_route(
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Expiry cards (Road Fund / MOT / Plate): tab counts + soonest rows."""
-    return dashboard_service.get_expiries(db, tenant_id)
+    """Expiry cards (Road Fund / MOT / Plate): tab counts + soonest rows.
+    ``context`` (cams | skyline) scopes to one Vehicle Management side."""
+    return dashboard_service.get_expiries(db, tenant_id, context=context or None)
 
 
 @router.get("/dashboard/attention")
 def attention_route(
     side: str = "vehicles",
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
     """Attention-required tiles. ``side`` (skyline | vehicles) picks driver-doc vs
-    vehicle-doc counting for the Missing Documents tile."""
-    return dashboard_service.get_attention(db, tenant_id, side=side)
+    vehicle-doc counting for the Missing Documents tile; ``context`` (cams | skyline)
+    scopes the vehicle-doc count to one Vehicle Management side."""
+    return dashboard_service.get_attention(db, tenant_id, side=side, context=context or None)
 
 
 @router.get("/dashboard/missing-documents")
 def missing_documents_route(
     side: str = "vehicles",
+    context: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
     """Missing documents for the Attention slider. ``side``: skyline → driver docs
-    (driving licence / taxi badge); vehicles → vehicle docs (MOT / Plate)."""
-    return dashboard_service.get_missing_documents(db, tenant_id, side=side)
+    (driving licence / taxi badge); vehicles → vehicle docs (MOT / Plate). ``context``
+    (cams | skyline) scopes vehicle docs to one Vehicle Management side."""
+    return dashboard_service.get_missing_documents(db, tenant_id, side=side, context=context or None)
 
 
 @router.get("/dashboard/overdue-returns")
