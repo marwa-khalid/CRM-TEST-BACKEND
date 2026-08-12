@@ -38,11 +38,13 @@ def hire_trend_route(
 @router.get("/dashboard/stats")
 def stats_route(
     period: str = "MTD",
+    module: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """The four top stat cards (period: WTD | MTD | YTD)."""
-    return dashboard_service.get_stats(db, tenant_id, period=period)
+    """The four top stat cards (period: WTD | MTD | YTD). `module` (skyline / vehicles)
+    makes the Urgent Alerts card side-aware."""
+    return dashboard_service.get_stats(db, tenant_id, period=period, module=module or None)
 
 
 @router.get("/dashboard/vehicle-status")

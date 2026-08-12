@@ -947,7 +947,37 @@ def _availability_pct_as_of(db: Session, tenant_id: Optional[int], as_of: date) 
     return round(row.available_count / row.total_count * 100)
 
 
-def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dict:
+def _overdue_returns_count(db: Session, tenant_id: Optional[int]) -> int:
+    q = (
+        db.query(func.count(FleetHireVehicle.id))
+        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
+        .filter(FleetHireVehicle.hire_end_date.isnot(None))
+        .filter(FleetHireVehicle.hire_end_date < date.today())
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetHire.tenant_id == tenant_id)
+    return q.scalar() or 0
+
+
+def _overdue_tasks_count(db: Session, tenant_id: Optional[int], module: Optional[str] = None) -> int:
+    from libdata.models.tables import Task
+    q = (
+        db.query(func.count(Task.id))
+        .filter(Task.is_deleted.is_(False))
+        .filter(Task.due_date.isnot(None))
+        .filter(Task.due_date < date.today())
+        .filter(func.lower(func.coalesce(Task.status, "")) != "completed")
+    )
+    if tenant_id is not None:
+        q = q.filter(Task.tenant_id == tenant_id)
+    if module:
+        q = q.filter(Task.module == module)
+    return q.scalar() or 0
+
+
+def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module: Optional[str] = None) -> dict:
     """The four top stat cards. `period` (WTD | MTD | YTD) scopes the income
     window and sets the trend comparison to one week / month / year ago. Each
     card carries a stable `key` the frontend maps to its icon; `up` means the
@@ -970,11 +1000,25 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD") -> dic
     prev_asof = _shift_period(today, period)
     prev_win_start = _shift_period(win_start, period)
 
-    on_hire_now, on_hire_prev = _on_hire_as_of(db, tenant_id, today), _on_hire_as_of(db, tenant_id, prev_asof)
+    # "Vehicles on Hire" must match the donut/listing (status-based), not the hire window.
+    on_hire_now = sum(1 for v in _effective_vehicle_list(db, tenant_id) if v["status"] == "On Hire")
+    on_hire_prev = _on_hire_as_of(db, tenant_id, prev_asof)
     total = _fleet_total(db, tenant_id)
     income_now = _income_between(db, tenant_id, win_start, now_end)
     income_prev = _income_between(db, tenant_id, prev_win_start, win_start)
-    urgent_now, urgent_prev = _overdue_expiries_as_of(db, tenant_id, today), _overdue_expiries_as_of(db, tenant_id, prev_asof)
+    # Urgent Alerts — side-aware. Vehicle Management keeps its original meaning:
+    # overdue vehicle compliance (road tax / plate / MOT). Skyline = overdue returns
+    # + overdue payments + overdue tasks.
+    if (module or "").lower() == "vehicles":
+        urgent_now = _overdue_expiries_as_of(db, tenant_id, today)
+        urgent_prev = _overdue_expiries_as_of(db, tenant_id, prev_asof)
+    else:
+        urgent_now = (
+            _overdue_returns_count(db, tenant_id)
+            + get_weekly_payments(db, tenant_id)["tabs"]["overdue"]
+            + _overdue_tasks_count(db, tenant_id, module)
+        )
+        urgent_prev = urgent_now
 
     # Availability = share of the fleet whose status is 'Available' (matches the donut).
     available_now = _available_count(db, tenant_id)
