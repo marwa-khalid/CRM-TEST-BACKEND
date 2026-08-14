@@ -5,13 +5,16 @@ import zipfile
 from datetime import date, datetime
 from sqlalchemy.orm import Session
 from docx import Document
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches, Pt
 from docx.text.paragraph import Paragraph
 import openpyxl
 
 from appflow.logger import logger
 from libdata.models.tables import (
     ABIBHRCharges, Claim, ClientDetail, EngineerDetail,
-    HireDetail, HireVehicleProvided, InsurerBroker, LocationCondition,
+    DriverCheck, HireDetail, HireVehicleProvided, InsurerBroker, LocationCondition,
     PlatingAdditionalCharges, Recovery, RouteRepair, Storage, ThirdPartyInsurer, TotalLoss,
 )
 from libdata.enums import PersonRoleEnum
@@ -311,6 +314,134 @@ def _plating_invoice(
     return _to_bytes(doc)
 
 
+def _docx_set_cell(cell, text: str = "", bold: bool = False, align=None):
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    cell.text = ""
+    p = cell.paragraphs[0]
+    if align is not None:
+        p.alignment = align
+    run = p.add_run(str(text or ""))
+    run.bold = bold
+    run.font.size = Pt(8)
+
+
+def _docx_table_grid(table):
+    try:
+        table.style = "Table Grid"
+    except Exception:
+        pass
+    return table
+
+
+def _storage_recovery_invoice(
+    insurer_company: str, today: date, invoice_no: str,
+    client_name: str, our_ref: str, their_ref: str,
+    storages, recoveries, storage_total: float, recovery_total: float,
+) -> bytes:
+    doc = Document()
+    section = doc.sections[0]
+    section.top_margin = Inches(0.6)
+    section.bottom_margin = Inches(0.6)
+    section.left_margin = Inches(0.6)
+    section.right_margin = Inches(0.6)
+
+    styles = doc.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(8)
+
+    header = _docx_table_grid(doc.add_table(rows=1, cols=2))
+    header.alignment = WD_TABLE_ALIGNMENT.CENTER
+    header.autofit = True
+    left, right = header.rows[0].cells
+    _docx_set_cell(left, "Nationwide Assist Ltd\nCredit Hire & Claims", bold=True)
+    _docx_set_cell(
+        right,
+        f"OUR REF  {our_ref or ''}\nYOUR REF  {their_ref or ''}\nDATED  {_short(today)}",
+        align=WD_ALIGN_PARAGRAPH.RIGHT,
+    )
+
+    title = doc.add_paragraph()
+    title.paragraph_format.space_before = Pt(18)
+    title.paragraph_format.space_after = Pt(8)
+    title_run = title.add_run("STORAGE AND RECOVERY INVOICE")
+    title_run.bold = True
+    title_run.font.size = Pt(12)
+
+    bill = _docx_table_grid(doc.add_table(rows=2, cols=2))
+    bill.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _docx_set_cell(bill.cell(0, 0), "Bill To", bold=True)
+    _docx_set_cell(bill.cell(0, 1), insurer_company)
+    _docx_set_cell(bill.cell(1, 0), "Client", bold=True)
+    _docx_set_cell(bill.cell(1, 1), client_name)
+
+    meta = _docx_table_grid(doc.add_table(rows=1, cols=4))
+    meta.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _docx_set_cell(meta.cell(0, 0), "Invoice No.", bold=True)
+    _docx_set_cell(meta.cell(0, 1), invoice_no)
+    _docx_set_cell(meta.cell(0, 2), "Invoice Date", bold=True)
+    _docx_set_cell(meta.cell(0, 3), _short(today))
+
+    def add_heading(text: str):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(12)
+        p.paragraph_format.space_after = Pt(4)
+        r = p.add_run(text)
+        r.bold = True
+        r.font.size = Pt(9)
+
+    add_heading("Storage Charges")
+    st = _docx_table_grid(doc.add_table(rows=1, cols=6))
+    st.alignment = WD_TABLE_ALIGNMENT.CENTER
+    headings = ["Storage Provider", "Start Date", "End Date", "Days", "Daily Rate", "Amount"]
+    for i, h in enumerate(headings):
+        _docx_set_cell(st.cell(0, i), h, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+    if storages:
+        for row in storages:
+            cells = st.add_row().cells
+            _docx_set_cell(cells[0], getattr(row, "storage_provider", None) or getattr(row, "name", None) or "")
+            _docx_set_cell(cells[1], _short(getattr(row, "start_date", None)))
+            _docx_set_cell(cells[2], _short(getattr(row, "end_date", None)))
+            _docx_set_cell(cells[3], getattr(row, "total_storage_days", None) or "", align=WD_ALIGN_PARAGRAPH.RIGHT)
+            _docx_set_cell(cells[4], _money(_f(getattr(row, "charge_per_day", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
+            _docx_set_cell(cells[5], _money(_f(getattr(row, "total_storage_charges", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
+    else:
+        cells = st.add_row().cells
+        _docx_set_cell(cells[0], "No storage charges")
+        for i in range(1, 6):
+            _docx_set_cell(cells[i], "")
+
+    add_heading("Recovery Charges")
+    rt = _docx_table_grid(doc.add_table(rows=1, cols=3))
+    rt.alignment = WD_TABLE_ALIGNMENT.CENTER
+    headings = ["Recovery Provider", "Recovery Date", "Amount"]
+    for i, h in enumerate(headings):
+        _docx_set_cell(rt.cell(0, i), h, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+    if recoveries:
+        for row in recoveries:
+            cells = rt.add_row().cells
+            _docx_set_cell(cells[0], getattr(row, "recovery_provider", None) or getattr(row, "name", None) or "")
+            _docx_set_cell(cells[1], _short(getattr(row, "date_of_recovery", None)))
+            _docx_set_cell(cells[2], _money(_f(getattr(row, "recovery_charges", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
+    else:
+        cells = rt.add_row().cells
+        _docx_set_cell(cells[0], "No recovery charges")
+        _docx_set_cell(cells[1], "")
+        _docx_set_cell(cells[2], "")
+
+    total_table = _docx_table_grid(doc.add_table(rows=3, cols=2))
+    total_table.alignment = WD_TABLE_ALIGNMENT.RIGHT
+    total_table.columns[0].width = Inches(1.8)
+    total_table.columns[1].width = Inches(1.2)
+    _docx_set_cell(total_table.cell(0, 0), "Storage Total", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    _docx_set_cell(total_table.cell(0, 1), _money(storage_total), bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    _docx_set_cell(total_table.cell(1, 0), "Recovery Total", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    _docx_set_cell(total_table.cell(1, 1), _money(recovery_total), bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    _docx_set_cell(total_table.cell(2, 0), "TOTAL DUE", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    _docx_set_cell(total_table.cell(2, 1), _money(storage_total + recovery_total), bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+
+    return _to_bytes(doc)
+
+
 def _hire_validation(
     notification_date, inspection_date,
     repair_auth, repair_start, repair_completed,
@@ -362,6 +493,7 @@ def _covering_letter(
     bhr_admin: float, abi_admin: float, abi_admin_31_60: float, abi_admin_61plus: float,
     repair: float, storage: float, recovery: float, plating: float,
     engineer_fee: float, cdw: float, col_del: float,
+    valeting_fee: float = 0,
     sign_off_name: str = "",
 ) -> bytes:
     wb = openpyxl.load_workbook(os.path.join(ASSET_DIR, _TEMPLATES["covering_letter"]))
@@ -411,9 +543,15 @@ def _covering_letter(
     ws["E41"] = 0
     ws["F41"] = 0
 
-    # Sign-off name (replaces the template's hardcoded "Alex Berwick")
-    if sign_off_name:
-        ws["B58"] = sign_off_name
+    ws["B45"] = "Valeting Fees (Not VAT Applicable)"
+    for col in ("C", "D", "E", "F"):
+        ws[f"{col}45"] = round(valeting_fee, 2)
+
+    ws["B53"] = "Please make your cheque payable to: Nationwide Assist Ltd"
+    ws["F53"] = ""
+    ws["B55"] = "Yours Faithfully,"
+    ws["B58"] = sign_off_name or "Akeel rehman"
+    ws["B59"] = "Nationwide Assist Ltd"
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -460,8 +598,16 @@ def generate_payment_pack(claim_id: int, tenant_id: int, db: Session, sign_off_n
     abi_rec = db.query(ABIBHRCharges).filter(ABIBHRCharges.claim_id == claim_id).first()
     repair = db.query(RouteRepair).filter(RouteRepair.claim_id == claim_id).first()
     total_loss = db.query(TotalLoss).filter(TotalLoss.claim_id == claim_id).first()
-    storages = db.query(Storage).filter(Storage.claim_id == claim_id).all()
-    recoveries = db.query(Recovery).filter(Recovery.claim_id == claim_id).all()
+    storages = db.query(Storage).filter(
+        Storage.claim_id == claim_id,
+        Storage.is_active == True,
+        Storage.is_deleted == False,
+    ).all()
+    recoveries = db.query(Recovery).filter(
+        Recovery.claim_id == claim_id,
+        Recovery.is_active == True,
+        Recovery.is_deleted == False,
+    ).all()
 
     # ── derive values ──────────────────────────────────────────────────────────
     invoice_no = (abi_rec.invoice_number if abi_rec else None) or ""
@@ -543,6 +689,16 @@ def generate_payment_pack(claim_id: int, tenant_id: int, db: Session, sign_off_n
     plating_fee_val = _f(plating.private_hire_plating_fee if plating else 0)
     engineer_fee = _f(engineer.engineer_fee if engineer else 0)
     repair_cost = _f(repair.sub_total if repair else 0)  # exclusive of VAT
+    hire_vehicle_ids = [v.id for v in hire_vps if getattr(v, "id", None)]
+    valeting_total = 0.0
+    if hire_vehicle_ids:
+        driver_checks = (
+            db.query(DriverCheck.valet_charges)
+            .filter(DriverCheck.hire_vehicle_provided_id.in_(hire_vehicle_ids))
+            .filter(DriverCheck.is_active == True, DriverCheck.is_deleted == False)
+            .all()
+        )
+        valeting_total = sum(_f(row[0]) for row in driver_checks)
 
     our_ref = build_case_reference(claim_id, db)  # "Our Reference" — the claim reference
 
@@ -568,6 +724,7 @@ def generate_payment_pack(claim_id: int, tenant_id: int, db: Session, sign_off_n
         )
         db.add(abi_rec)
         db.commit()
+    invoice_no = (abi_rec.invoice_number if abi_rec else None) or invoice_no
 
     # ── build ZIP ──────────────────────────────────────────────────────────────
     zip_buf = io.BytesIO()
@@ -606,7 +763,13 @@ def generate_payment_pack(claim_id: int, tenant_id: int, db: Session, sign_off_n
                                      bhr_admin, abi_admin, abi_admin_31_60, abi_admin_61plus,
                                      repair_cost, storage_total, recovery_total,
                                      plating_total, engineer_fee, cdw * total_days, col_del,
+                                     valeting_total,
                                      sign_off_name))
+        zf.writestr("7_Storage_Recovery_Invoice.docx",
+                    _storage_recovery_invoice(insurer_company, today, invoice_no,
+                                              client_name, our_ref, their_ref,
+                                              storages, recoveries,
+                                              storage_total, recovery_total))
 
     zip_buf.seek(0)
     filename = f"PaymentPack_Claim{claim_id}_{today.strftime('%Y%m%d')}.zip"

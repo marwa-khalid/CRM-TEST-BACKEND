@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from libdata.settings import get_session
-from libdata.models.tables import User
 from appflow.models.abi_bhr_charges import ABIBHRChargesIn, ABIBHRChargesOut
 from appflow.services.abi_bhr_charges_service import ABIBHRChargesService
 from appflow.services.payment_pack_service import generate_payment_pack
@@ -37,11 +36,7 @@ def generate_payment_pack_endpoint(
 ):
     try:
         tenant_id = get_tenant_id(request)
-        # Sign-off name = logged-in user's email local-part (before the @)
-        sign_off_name = ""
-        user = db.query(User).filter(User.id == current_user).first() if current_user else None
-        if user and user.user_name:
-            sign_off_name = user.user_name.split("@")[0]
+        sign_off_name = "Akeel rehman"
         zip_bytes, filename = generate_payment_pack(claim_id, tenant_id, db, sign_off_name)
         return Response(
             content=zip_bytes,
