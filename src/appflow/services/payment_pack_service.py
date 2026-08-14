@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 from docx.text.paragraph import Paragraph
 import openpyxl
@@ -325,6 +327,13 @@ def _docx_set_cell(cell, text: str = "", bold: bool = False, align=None):
     run.font.size = Pt(8)
 
 
+def _docx_shade_cell(cell, fill: str = "D9D9D9"):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shading = OxmlElement("w:shd")
+    shading.set(qn("w:fill"), fill)
+    tc_pr.append(shading)
+
+
 def _docx_table_grid(table):
     try:
         table.style = "Table Grid"
@@ -335,7 +344,7 @@ def _docx_table_grid(table):
 
 def _storage_recovery_invoice(
     insurer_company: str, today: date, invoice_no: str,
-    client_name: str, our_ref: str, their_ref: str,
+    client_name: str, vehicle_reg: str, vehicle_desc: str,
     storages, recoveries, storage_total: float, recovery_total: float,
 ) -> bytes:
     doc = Document()
@@ -349,95 +358,77 @@ def _storage_recovery_invoice(
     styles["Normal"].font.name = "Arial"
     styles["Normal"].font.size = Pt(8)
 
-    header = _docx_table_grid(doc.add_table(rows=1, cols=2))
-    header.alignment = WD_TABLE_ALIGNMENT.CENTER
-    header.autofit = True
-    left, right = header.rows[0].cells
-    _docx_set_cell(left, "Nationwide Assist Ltd\nCredit Hire & Claims", bold=True)
-    _docx_set_cell(
-        right,
-        f"OUR REF  {our_ref or ''}\nYOUR REF  {their_ref or ''}\nDATED  {_short(today)}",
-        align=WD_ALIGN_PARAGRAPH.RIGHT,
-    )
+    for _ in range(5):
+        doc.add_paragraph()
+
+    bill_label = doc.add_paragraph()
+    bill_label.paragraph_format.space_after = Pt(0)
+    bill_run = bill_label.add_run("Bill To:")
+    bill_run.bold = True
+    bill_run.font.size = Pt(8)
+
+    bill_to = doc.add_paragraph()
+    bill_to.paragraph_format.space_after = Pt(24)
+    bill_to.add_run(insurer_company or "").font.size = Pt(8)
+
+    meta_text = doc.add_paragraph()
+    meta_text.paragraph_format.space_after = Pt(6)
+    meta_run = meta_text.add_run(f"Invoice Date:\t\t{_short2(today)}\nInvoice Number:\t{invoice_no or ''}")
+    meta_run.font.size = Pt(8)
 
     title = doc.add_paragraph()
-    title.paragraph_format.space_before = Pt(18)
-    title.paragraph_format.space_after = Pt(8)
-    title_run = title.add_run("STORAGE AND RECOVERY INVOICE")
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_after = Pt(6)
+    title_run = title.add_run("STORAGE & RECOVERY INVOICE")
     title_run.bold = True
     title_run.font.size = Pt(12)
 
-    bill = _docx_table_grid(doc.add_table(rows=2, cols=2))
-    bill.alignment = WD_TABLE_ALIGNMENT.CENTER
-    _docx_set_cell(bill.cell(0, 0), "Bill To", bold=True)
-    _docx_set_cell(bill.cell(0, 1), insurer_company)
-    _docx_set_cell(bill.cell(1, 0), "Client", bold=True)
-    _docx_set_cell(bill.cell(1, 1), client_name)
+    summary = _docx_table_grid(doc.add_table(rows=2, cols=3))
+    summary.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for i, h in enumerate(["Client", "Vehicle\nRegistration", "Vehicle Description"]):
+        _docx_set_cell(summary.cell(0, i), h, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+        _docx_shade_cell(summary.cell(0, i))
+    _docx_set_cell(summary.cell(1, 0), client_name, align=WD_ALIGN_PARAGRAPH.CENTER)
+    _docx_set_cell(summary.cell(1, 1), vehicle_reg, align=WD_ALIGN_PARAGRAPH.CENTER)
+    _docx_set_cell(summary.cell(1, 2), vehicle_desc, align=WD_ALIGN_PARAGRAPH.CENTER)
 
-    meta = _docx_table_grid(doc.add_table(rows=1, cols=4))
-    meta.alignment = WD_TABLE_ALIGNMENT.CENTER
-    _docx_set_cell(meta.cell(0, 0), "Invoice No.", bold=True)
-    _docx_set_cell(meta.cell(0, 1), invoice_no)
-    _docx_set_cell(meta.cell(0, 2), "Invoice Date", bold=True)
-    _docx_set_cell(meta.cell(0, 3), _short(today))
+    doc.add_paragraph()
+    details = _docx_table_grid(doc.add_table(rows=1, cols=2))
+    details.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _docx_set_cell(details.cell(0, 0), "Details", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+    _docx_set_cell(details.cell(0, 1), "Amount", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+    _docx_shade_cell(details.cell(0, 0))
+    _docx_shade_cell(details.cell(0, 1))
 
-    def add_heading(text: str):
-        p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(12)
-        p.paragraph_format.space_after = Pt(4)
-        r = p.add_run(text)
-        r.bold = True
-        r.font.size = Pt(9)
+    for row in recoveries or []:
+        provider = getattr(row, "recovery_provider", None) or getattr(row, "name", None) or "Nationwide Assist"
+        date_text = _short(getattr(row, "date_of_recovery", None))
+        cells = details.add_row().cells
+        _docx_set_cell(cells[0], f"Vehicle Recovered to Nationwide Assist by {provider}" + (f" on {date_text}" if date_text else ""))
+        _docx_set_cell(cells[1], _money(_f(getattr(row, "recovery_charges", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
 
-    add_heading("Storage Charges")
-    st = _docx_table_grid(doc.add_table(rows=1, cols=6))
-    st.alignment = WD_TABLE_ALIGNMENT.CENTER
-    headings = ["Storage Provider", "Start Date", "End Date", "Days", "Daily Rate", "Amount"]
-    for i, h in enumerate(headings):
-        _docx_set_cell(st.cell(0, i), h, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
-    if storages:
-        for row in storages:
-            cells = st.add_row().cells
-            _docx_set_cell(cells[0], getattr(row, "storage_provider", None) or getattr(row, "name", None) or "")
-            _docx_set_cell(cells[1], _short(getattr(row, "start_date", None)))
-            _docx_set_cell(cells[2], _short(getattr(row, "end_date", None)))
-            _docx_set_cell(cells[3], getattr(row, "total_storage_days", None) or "", align=WD_ALIGN_PARAGRAPH.RIGHT)
-            _docx_set_cell(cells[4], _money(_f(getattr(row, "charge_per_day", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
-            _docx_set_cell(cells[5], _money(_f(getattr(row, "total_storage_charges", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
-    else:
-        cells = st.add_row().cells
-        _docx_set_cell(cells[0], "No storage charges")
-        for i in range(1, 6):
-            _docx_set_cell(cells[i], "")
+    for row in storages or []:
+        days = getattr(row, "total_storage_days", None) or ""
+        rate = _money(_f(getattr(row, "charge_per_day", 0)))
+        start = _short(getattr(row, "start_date", None))
+        end = _short(getattr(row, "end_date", None))
+        cells = details.add_row().cells
+        _docx_set_cell(cells[0], f"Vehicle stored at Nationwide Assist at {rate} per day for {days} days from {start} until {end}")
+        _docx_set_cell(cells[1], _money(_f(getattr(row, "total_storage_charges", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
 
-    add_heading("Recovery Charges")
-    rt = _docx_table_grid(doc.add_table(rows=1, cols=3))
-    rt.alignment = WD_TABLE_ALIGNMENT.CENTER
-    headings = ["Recovery Provider", "Recovery Date", "Amount"]
-    for i, h in enumerate(headings):
-        _docx_set_cell(rt.cell(0, i), h, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
-    if recoveries:
-        for row in recoveries:
-            cells = rt.add_row().cells
-            _docx_set_cell(cells[0], getattr(row, "recovery_provider", None) or getattr(row, "name", None) or "")
-            _docx_set_cell(cells[1], _short(getattr(row, "date_of_recovery", None)))
-            _docx_set_cell(cells[2], _money(_f(getattr(row, "recovery_charges", 0))), align=WD_ALIGN_PARAGRAPH.RIGHT)
-    else:
-        cells = rt.add_row().cells
-        _docx_set_cell(cells[0], "No recovery charges")
-        _docx_set_cell(cells[1], "")
-        _docx_set_cell(cells[2], "")
+    if not recoveries and not storages:
+        cells = details.add_row().cells
+        _docx_set_cell(cells[0], "No storage or recovery charges", align=WD_ALIGN_PARAGRAPH.CENTER)
+        _docx_set_cell(cells[1], _money(0), align=WD_ALIGN_PARAGRAPH.RIGHT)
 
-    total_table = _docx_table_grid(doc.add_table(rows=3, cols=2))
-    total_table.alignment = WD_TABLE_ALIGNMENT.RIGHT
-    total_table.columns[0].width = Inches(1.8)
-    total_table.columns[1].width = Inches(1.2)
-    _docx_set_cell(total_table.cell(0, 0), "Storage Total", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
-    _docx_set_cell(total_table.cell(0, 1), _money(storage_total), bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
-    _docx_set_cell(total_table.cell(1, 0), "Recovery Total", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
-    _docx_set_cell(total_table.cell(1, 1), _money(recovery_total), bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
-    _docx_set_cell(total_table.cell(2, 0), "TOTAL DUE", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
-    _docx_set_cell(total_table.cell(2, 1), _money(storage_total + recovery_total), bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    sub_total = storage_total + recovery_total
+    vat = sub_total * 0.2
+    total_due = sub_total + vat
+    for label, value in [("Sub Total", sub_total), ("VAT", vat), ("TOTAL", total_due)]:
+        cells = details.add_row().cells
+        _docx_set_cell(cells[0], "", align=WD_ALIGN_PARAGRAPH.RIGHT)
+        _docx_set_cell(cells[1], f"{label}\t{_money(value)}", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+        _docx_shade_cell(cells[1])
 
     return _to_bytes(doc)
 
@@ -767,7 +758,7 @@ def generate_payment_pack(claim_id: int, tenant_id: int, db: Session, sign_off_n
                                      sign_off_name))
         zf.writestr("7_Storage_Recovery_Invoice.docx",
                     _storage_recovery_invoice(insurer_company, today, invoice_no,
-                                              client_name, our_ref, their_ref,
+                                              client_name, vehicle_reg, vehicle_desc,
                                               storages, recoveries,
                                               storage_total, recovery_total))
 
