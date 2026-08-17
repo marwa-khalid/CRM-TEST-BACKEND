@@ -624,7 +624,11 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
             elif due < today:
                 buckets["overdue"].append(_row(reg, cust, due_amt, outstanding, due, "Overdue", "red"))
                 amt["overdue"] += outstanding
-                by_day_overdue[due.weekday()] += outstanding
+                # The graph is "this week" only: a payment overdue from a PREVIOUS week
+                # (due before this Monday) shows in the schedule/overdue tab but not the
+                # graph. Only this week's own overdue (due this Mon → today) is plotted.
+                if due >= week_start:
+                    by_day_overdue[due.weekday()] += outstanding
 
     # "All" = every actionable payment (the four buckets), not the full historical/future
     # schedule — otherwise it balloons to every weekly installment ever recorded.

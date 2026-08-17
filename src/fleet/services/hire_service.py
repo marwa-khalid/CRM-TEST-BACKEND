@@ -85,9 +85,24 @@ def list_hires(db: Session, tenant_id: Optional[int]):
 
 
 def delete_hire(db: Session, hire_id: int, tenant_id: Optional[int]) -> dict:
-    """Soft-delete a hire so it drops off the main list."""
+    """Soft-delete a hire so it drops off the main list, and free its vehicles: an
+    on-hire vehicle record reverts to Available (off-hire already does this; delete
+    used to leave the record stuck showing "On Hire" in the VM listing)."""
+    from fleet.models.tables import FleetVehicleRecord
+
     hire = get_hire_or_404(db, hire_id, tenant_id)
     hire.is_deleted = True
+    hv_regs = {
+        (hv.registration_number or "").replace(" ", "").upper()
+        for hv in db.query(FleetHireVehicle).filter(FleetHireVehicle.hire_id == hire_id).all()
+        if hv.registration_number
+    }
+    for rec in db.query(FleetVehicleRecord).filter(FleetVehicleRecord.is_deleted.isnot(True)).all():
+        linked = rec.hire_id == hire_id or (rec.registration_number or "").replace(" ", "").upper() in hv_regs
+        if linked and (rec.vehicle_status or "").strip().lower().replace("_", " ") in ("on hire", "weekly hire"):
+            rec.vehicle_status = "Available"
+            if rec.hire_id == hire_id:
+                rec.hire_id = None
     db.commit()
     return {"success": True}
 

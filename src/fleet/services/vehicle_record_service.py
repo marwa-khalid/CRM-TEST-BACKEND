@@ -7,10 +7,10 @@ read from the most recent hire that used this registration.
 from typing import List, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from fleet.models.tables import FleetHireVehicle, FleetVehicleRecord
+from fleet.models.tables import FleetHire, FleetHireVehicle, FleetVehicleRecord
 
 
 def _normalise_reg(value: Optional[str]) -> str:
@@ -119,6 +119,36 @@ def get_or_create_for_hire(
     return _attach_mileage(db, record)
 
 
+def _free_stale_on_hire(db: Session, records: List[FleetVehicleRecord], tenant_id: int) -> None:
+    """Self-heal: a record stored as On Hire but with NO active (non-deleted) hire
+    reverts to Available. Deleting a hire used to leave the vehicle stuck on-hire in
+    the listing (the dashboard was always correct — it derives on-hire live). Runs on
+    read so pre-existing stuck records fix themselves without a manual DB pass."""
+    on_hire = [
+        r for r in records
+        if (r.vehicle_status or "").strip().lower().replace("_", " ") in ("on hire", "weekly hire")
+    ]
+    if not on_hire:
+        return
+    q = (
+        db.query(FleetHireVehicle.registration_number)
+        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
+        .filter(FleetHire.is_deleted.isnot(True))
+        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
+    )
+    if tenant_id is not None:
+        q = q.filter(FleetHire.tenant_id == tenant_id)
+    active_regs = {_normalise_reg(row[0]) for row in q.all() if row[0]}
+    changed = False
+    for r in on_hire:
+        if _normalise_reg(r.registration_number) not in active_regs:
+            r.vehicle_status = "Available"
+            r.hire_id = None
+            changed = True
+    if changed:
+        db.commit()
+
+
 def list_vehicle_records(
     db: Session, tenant_id: int, context: Optional[str] = None,
 ) -> List[FleetVehicleRecord]:
@@ -132,6 +162,7 @@ def list_vehicle_records(
         # Legacy rows were migrated to "skyline", so an explicit filter is exact.
         q = q.filter(FleetVehicleRecord.context == context)
     records = q.order_by(FleetVehicleRecord.id.desc()).all()
+    _free_stale_on_hire(db, records, tenant_id)
     return [_attach_mileage(db, r) for r in records]
 
 
