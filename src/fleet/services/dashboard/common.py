@@ -69,133 +69,6 @@ def _hire_start_dates(db: Session, tenant_id: Optional[int], status: Optional[st
     return [row[0] for row in query.all()]
 
 
-def get_hire_trend(
-    db: Session,
-    tenant_id: Optional[int],
-    period: str = "WTD",
-    mode: str = "",
-    start: Optional[str] = None,
-    end: Optional[str] = None,
-    status: Optional[str] = None,
-    cmp_type: str = "",
-    a: str = "",
-    b: str = "",
-) -> dict:
-    """Vehicle-hire counts for the Fleet dashboard's Hire Trend graph.
-
-    ``period`` is WTD | MTD | YTD | CUSTOM; ``mode`` YOY | MOM turns it into a
-    two-bar previous-vs-current comparison. The response mirrors the chart's own
-    shape so the frontend maps it straight onto a view:
-    ``{labels, values, caption, comparison_note}``.
-    """
-    period = (period or "WTD").upper()
-    mode = (mode or "").upper()
-    today = date.today()
-    dates = _hire_start_dates(db, tenant_id, status)
-
-    # ── Comparison modes: two totals, previous vs current ─────────────────────
-    if mode == "MOM":
-        cur = today.replace(day=1)
-        prev = _add_months(cur, -1)
-        nxt = _add_months(cur, 1)
-        return {
-            "labels": [_month_label(prev), _month_label(cur)],
-            "values": [_count_between(dates, prev, cur), _count_between(dates, cur, nxt)],
-            "caption": f"{_month_label(prev)} vs {_month_label(cur, True)}",
-            "comparison_note": "from last month",
-        }
-    if mode == "YOY":
-        cur_start = date(today.year, 1, 1)
-        prev_start = date(today.year - 1, 1, 1)
-        nxt_start = date(today.year + 1, 1, 1)
-        return {
-            "labels": [str(today.year - 1), str(today.year)],
-            "values": [_count_between(dates, prev_start, cur_start), _count_between(dates, cur_start, nxt_start)],
-            "caption": f"{today.year - 1} vs {today.year}",
-            "comparison_note": "from last year",
-        }
-
-    # ── Custom Year/Month comparison: two chosen periods, side by side ────────
-    if period == "CUSTOM" and cmp_type and a and b:
-        ct = cmp_type.strip().lower()
-        try:
-            if ct == "year":
-                ya, yb = int(a), int(b)
-                va = _count_between(dates, date(ya, 1, 1), date(ya + 1, 1, 1))
-                vb = _count_between(dates, date(yb, 1, 1), date(yb + 1, 1, 1))
-                la, lb = str(ya), str(yb)
-            else:  # month, a/b are "YYYY-MM"
-                sa = date(int(a[:4]), int(a[5:7]), 1)
-                sb = date(int(b[:4]), int(b[5:7]), 1)
-                va = _count_between(dates, sa, _add_months(sa, 1))
-                vb = _count_between(dates, sb, _add_months(sb, 1))
-                la, lb = _month_label(sa, True), _month_label(sb, True)
-            return {
-                "labels": [la, lb],
-                "values": [va, vb],
-                "caption": f"{la} vs {lb}",
-                "comparison_note": f"vs {la}",
-            }
-        except (ValueError, IndexError):
-            pass
-
-    # ── Period buckets ────────────────────────────────────────────────────────
-    labels: List[str] = []
-    ranges: List[tuple] = []
-    caption = ""
-
-    if period == "WTD":
-        monday = today - timedelta(days=today.weekday())
-        labels = ["Mon", "Tue", "Wed", "Thu", "Fri"]  # working week only
-        ranges = [(monday + timedelta(days=i), monday + timedelta(days=i + 1)) for i in range(5)]
-        caption = f"{monday:%d-%m-%y} to {monday + timedelta(days=4):%d-%m-%y}"
-    elif period == "MTD":
-        first = today.replace(day=1)
-        month_end = _add_months(first, 1)
-        wk, cursor = 1, first
-        while cursor < month_end:
-            ranges.append((cursor, min(cursor + timedelta(days=7), month_end)))
-            labels.append(f"Week {wk}")
-            cursor += timedelta(days=7)
-            wk += 1
-        caption = _month_label(first, True)
-    elif period == "CUSTOM":
-        s_d = _parse_date(start)
-        e_d = _parse_date(end)
-        if not (s_d and e_d and e_d >= s_d):
-            # No range picked yet → default to the last 6 weeks.
-            e_d, s_d = today, today - timedelta(weeks=6)
-        if (e_d - s_d).days <= 45:
-            cursor = s_d
-            while cursor <= e_d:
-                labels.append(f"{cursor.day} {_MONTHS[cursor.month - 1]}")
-                ranges.append((cursor, cursor + timedelta(days=1)))
-                cursor += timedelta(days=1)
-        else:
-            end_excl = e_d + timedelta(days=1)
-            cursor = s_d.replace(day=1)
-            while cursor < end_excl:
-                nxt = _add_months(cursor, 1)
-                labels.append(_month_label(cursor, True))
-                ranges.append((cursor, min(nxt, end_excl)))
-                cursor = nxt
-        caption = f"{s_d:%d %b} – {e_d:%d %b %Y}"
-    else:  # YTD → Jan through the current month
-        for m in range(1, today.month + 1):
-            s = date(today.year, m, 1)
-            ranges.append((s, _add_months(s, 1)))
-            labels.append(_MONTHS[m - 1])
-        caption = f"{_MONTHS[0]}–{_MONTHS[today.month - 1]} {today.year}"
-
-    return {
-        "labels": labels,
-        "values": [_count_between(dates, s, e) for s, e in ranges],
-        "caption": caption,
-        "comparison_note": None,
-    }
-
-
-# ── Top stat cards ────────────────────────────────────────────────────────────
 def _to_float(value) -> float:
     """Parse a money-ish string ('£38,420', '575.00') to a float; 0.0 on junk."""
     if value is None:
@@ -500,60 +373,6 @@ _DONUT_STATUSES = [
 ]
 
 
-def get_vehicle_status(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
-    """Vehicle-status distribution for the donut: one bucket per Vehicle Details
-    availability status. Reads the same effective list the "Skyline Vehicles" section uses
-    (records + the live-hire overlay, so an on-hire vehicle reads On Hire and an
-    off-hire one Off Fleet) so the two always agree. Every status is emitted (0 included)
-    so the legend always lists them all."""
-    counts = {k: 0 for k in _DONUT_STATUSES}
-    for v in _effective_vehicle_list(db, tenant_id, context):
-        counts[v["status"]] = counts.get(v["status"], 0) + 1
-    segments = [{"label": k, "value": counts.get(k, 0)} for k in _DONUT_STATUSES]
-    # Any status outside the known list (defensive) still shows, after the fixed ones.
-    segments += [{"label": k, "value": v} for k, v in counts.items() if k not in _DONUT_STATUSES]
-    return {"total": sum(counts.values()), "segments": segments}
-
-
-def get_fleet_vehicles(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
-    """Live vehicle list for the dashboard's "Skyline Vehicles" section — the same
-    effective list the status donut counts (records + hire on/off-hire). On-hire and
-    off-hire vehicles read as such (never "Available"), and on-hire carries the driver
-    + how long it's been out. Empty when there are no vehicles or hires. ``context``
-    (cams | skyline) scopes to one Vehicle Management side."""
-    today = date.today()
-    items = []
-    for v in _effective_vehicle_list(db, tenant_id, context):
-        model = " ".join(x for x in [v.get("make"), v.get("model")] if x) or "—"
-        s = (v["status"] or "").strip()
-        sl = s.lower()
-        if s in ("On Hire", "Weekly Hire"):
-            key = "hire"
-        elif s in ("Off Hire", "Off Fleet"):
-            key = "off"
-        elif "repair" in sl:
-            key = "repair"
-        elif s == "For Sale":
-            key = "sale"
-        else:
-            key = "available"
-        item = {"registration": v["registration"], "model": model, "statusKey": key, "statusLabel": s or "Available"}
-        # Off-hired today (now Available) — powers the daily "Off Hire" filter on the dashboard.
-        item["offHiredToday"] = bool(v.get("off_hired_on") and v.get("off_hired_on") == today)
-        if key == "hire":
-            start = v.get("hire_start")
-            if start:
-                days = max(0, (today - start).days)
-                item["hireInfo"] = f"On Hire for {days} Day{'s' if days != 1 else ''}"
-            if (v.get("driver") or "").strip():
-                item["customer"] = v["driver"].strip()
-            if (v.get("reference") or "").strip():
-                item["reference"] = v["reference"].strip()
-        items.append(item)
-    return {"items": items}
-
-
-# ── Compliance + expiry cards (Road Fund / Plate / MOT / Service) ─────────────
 def _expiry_dates_by_category(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """{'road_fund'|'plate'|'mot'|'service': [(registration, expiry_date), …]}.
     Road tax lives on the vehicle record, plate/MOT on the licensing authority,
@@ -598,129 +417,20 @@ def _expiry_dates_by_category(db: Session, tenant_id: Optional[int], context: Op
 _COMPLIANCE_TITLES = [("mot", "MOT"), ("plate", "Plate"), ("road_fund", "Road Fund Licence"), ("service", "Service")]
 
 
-def get_compliance(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
-    """Per-category compliance: overdue count, % overdue (bar), and counts due
-    within 7 and within 30 days."""
-    today = date.today()
-    cats = _expiry_dates_by_category(db, tenant_id, context)
-    result = []
-    for key, title in _COMPLIANCE_TITLES:
-        items = cats.get(key, [])
-        # Service Due should only "count" once it's actually approaching: a vehicle
-        # serviced recently (next service months out) falls in no filter window
-        # (overdue / 7d / 30d), so it must not inflate the total either.
-        if key == "service":
-            horizon = today + timedelta(days=30)
-            items = [(reg, e) for reg, e in items if e <= horizon]
-        total = len(items)
-        denom = total or 1
-        overdue = sum(1 for _, e in items if e < today)
-        d7 = sum(1 for _, e in items if today <= e <= today + timedelta(days=7))
-        d30 = sum(1 for _, e in items if today <= e <= today + timedelta(days=30))
-        result.append({
-            "key": key, "title": title, "total": total,
-            "overdue": overdue, "bar": round(overdue / denom * 100), "d7": d7, "d30": d30,
-            # % of the fleet whose document isn't overdue — the "Compliant" figure.
-            "compliant": round((denom - overdue) / denom * 100),
-            "amber": round(d30 / denom * 100),  # at-risk share for the middle bar segment
-        })
-    return {"categories": result}
-
-
 def _remaining_label(expiry: date, today: date):
     days = (expiry - today).days
     if days < 0:
         return "Expired", "red"
     if days == 0:
         return "Today", "gray"
+    unit = "day" if days == 1 else "days"
+    # Colours match the tab buckets: ≤7 days yellow, everything else under 30 days blue.
     if days <= 7:
-        return f"{days} days", "orange"
-    return f"{days} days", "violet"
+        return f"Due in {days} {unit}", "yellow"
+    return f"Due in {days} {unit}", "blue"
 
 
 _EXPIRY_TITLES = [("road_fund", "Road Fund Licence"), ("mot", "MOT Expiry"), ("plate", "Plate Expiry")]
-
-
-def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
-    """Per-category expiry cards. Rows are grouped by bucket (expired / today /
-    7 days / 30 days) so the dashboard tabs can filter to a single bucket; tab
-    counts are the bucket sizes."""
-    today = date.today()
-    d7, d30 = today + timedelta(days=7), today + timedelta(days=30)
-
-    def _bucket(e: date):
-        if e < today:
-            return "expired"
-        if e == today:
-            return "today"
-        if e <= d7:
-            return "d7"
-        if e <= d30:
-            return "d30"
-        return None  # further-future expiries aren't surfaced
-
-    cats = _expiry_dates_by_category(db, tenant_id, context)
-
-    # reg -> licensing authority (for the Plate cards/slider, which show the authority
-    # in place of a driver).
-    authority_by_reg: dict = {}
-    aq = (
-        db.query(FleetVehicleRecord.registration_number, FleetVehicleLicensingAuthority.licensing_authority)
-        .join(FleetVehicleLicensingAuthority, FleetVehicleLicensingAuthority.vehicle_record_id == FleetVehicleRecord.id)
-        .filter(FleetVehicleRecord.is_deleted.isnot(True))
-        .filter(FleetVehicleLicensingAuthority.is_deleted.isnot(True))
-    )
-    if tenant_id is not None:
-        aq = aq.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    aq = _ctx(aq, context)
-    for reg, auth in aq.all():
-        if reg and auth and reg not in authority_by_reg:
-            authority_by_reg[reg] = auth
-
-    # reg -> "make model" for the card subtitle.
-    model_by_reg: dict = {}
-    mq = db.query(FleetVehicleRecord.registration_number, FleetVehicleRecord.make, FleetVehicleRecord.model).filter(
-        FleetVehicleRecord.is_deleted.isnot(True)
-    )
-    if tenant_id is not None:
-        mq = mq.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    mq = _ctx(mq, context)
-    for reg, make, model in mq.all():
-        if reg and reg not in model_by_reg:
-            model_by_reg[reg] = " ".join(x for x in [make, model] if x)
-
-    # norm reg -> effective status + current driver, from the SAME effective list the
-    # vehicles cards use (records + live hire overlay). Driving both off this list keeps
-    # the expiry "hire status" and driver in lockstep with the cards — the vehicle
-    # record's hire_id column can be stale, so we never rely on it here.
-    status_by_reg: dict = {}
-    driver_by_reg: dict = {}
-    for v in _effective_vehicle_list(db, tenant_id, context):
-        n = _norm_reg(v.get("registration"))
-        if n and n not in status_by_reg:
-            status_by_reg[n] = v["status"]
-            if (v.get("driver") or "").strip():
-                driver_by_reg[n] = v["driver"].strip()
-
-    cards: dict = {}
-    for key, _title in _EXPIRY_TITLES + [("service", "Service")]:
-        items = sorted(cats.get(key, []), key=lambda x: x[1])
-        rows: dict = {"expired": [], "today": [], "d7": [], "d30": []}
-        for reg, e in items:
-            bucket = _bucket(e)
-            if bucket:
-                # 4th slot: Plate carries the licensing authority, others the driver.
-                # 5th slot: "make model" (used by the Plate cards).
-                extra = authority_by_reg.get(reg, "—") if key == "plate" else (driver_by_reg.get(_norm_reg(reg)) or "—")
-                rows[bucket].append([
-                    reg or "—", e.strftime("%d %b %Y"), list(_remaining_label(e, today)),
-                    extra, model_by_reg.get(reg, ""), status_by_reg.get(_norm_reg(reg), ""),
-                ])
-        cards[key] = {
-            "tabs": {k: len(v) for k, v in rows.items()},
-            "rows": {k: v[:50] for k, v in rows.items()},  # full set for the slider; card shows first 5
-        }
-    return cards
 
 
 _service_mileage_ready = False
@@ -741,52 +451,6 @@ def _ensure_service_mileage_columns(db: Session) -> None:
     _service_mileage_ready = True
 
 
-def get_servicing_due(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
-    """Servicing Due card — mileage-based (distinct from the date-driven document
-    cards). For each vehicle:  remaining = service_due_mileage − current_mileage.
-    Bucketed Overdue (past the service odometer) / Due within 500 mi / Due within
-    1,000 mi; each row carries the current mileage, the service-due odometer and a
-    status label. Vehicles further than 1,000 miles out aren't surfaced."""
-    _ensure_service_mileage_columns(db)
-
-    q = (
-        db.query(
-            FleetVehicleRecord.registration_number,
-            FleetVehicleRecord.current_mileage,
-            FleetVehicleRecord.service_due_mileage,
-        )
-        .filter(FleetVehicleRecord.is_deleted.isnot(True))
-        .filter(FleetVehicleRecord.current_mileage.isnot(None))
-        .filter(FleetVehicleRecord.service_due_mileage.isnot(None))
-    )
-    if tenant_id is not None:
-        q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    q = _ctx(q, context)
-
-    rows: dict = {"overdue": [], "within_500": [], "within_1000": []}
-    # Soonest-due first (smallest remaining, i.e. most overdue, at the top).
-    computed = [(reg, cur, due, due - cur) for reg, cur, due in q.all()]
-    for reg, cur, due, remaining in sorted(computed, key=lambda r: r[3]):
-        vreg = reg or "—"
-        cur_s, due_s = f"{cur:,}", f"{due:,}"
-        if remaining < 0:
-            rows["overdue"].append([vreg, cur_s, due_s, [f"{abs(remaining):,} miles overdue", "red"]])
-        elif remaining <= 500:
-            label = "Service Due" if remaining == 0 else f"{remaining:,} miles remaining"
-            rows["within_500"].append([vreg, cur_s, due_s, [label, "orange"]])
-        elif remaining <= 1000:
-            rows["within_1000"].append([vreg, cur_s, due_s, [f"{remaining:,} miles remaining", "violet"]])
-        # remaining > 1,000 → not surfaced
-
-    return {
-        "tabs": {k: len(v) for k, v in rows.items()},
-        "rows": {k: v[:50] for k, v in rows.items()},
-    }
-
-
-# Driver "Documents Checklist" — the required items (Customer Insurance is Optional and
-# excluded). Each row: (label, checklist key, extra accepted doc_types, accepted prefixes).
-# Mirrors the frontend DocumentChecklist.matchesChecklistDoc so "uploaded" agrees with the UI.
 _DRIVER_CHECKLIST = [
     ("Bank Statement", "checklist_bank_statement", (), ("bank_statement_",)),
     ("Utility Bill", "checklist_utility_bill", ("firstUtility", "secondUtility", "first_utility", "second_utility"), ("utility_",)),
@@ -881,100 +545,6 @@ def _missing_docs_for_side(db: Session, tenant_id: Optional[int], side: str, con
     if (side or "").strip().lower() == "skyline":
         return _missing_driver_documents(db, tenant_id)
     return _missing_documents(db, tenant_id, context)
-
-
-def get_missing_documents(db: Session, tenant_id: Optional[int], side: str = "vehicles", context: Optional[str] = None) -> dict:
-    """Full list of missing documents for the Attention slider — vehicle docs for
-    Vehicle Management, driver docs (driving licence / taxi badge) for Skyline."""
-    return {"items": _missing_docs_for_side(db, tenant_id, side, context)}
-
-
-def get_attention(db: Session, tenant_id: Optional[int], side: str = "vehicles", context: Optional[str] = None) -> dict:
-    """The three Attention-Required tiles: vehicles out past their return date,
-    documents missing (vehicle docs for VM / driver docs for Skyline), and hire
-    payments past due."""
-    today = date.today()
-
-    returns_q = (
-        db.query(func.count(FleetHireVehicle.id))
-        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
-        .filter(FleetHire.is_deleted.isnot(True))
-        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
-        .filter(FleetHireVehicle.hire_end_date.isnot(None))
-        .filter(FleetHireVehicle.hire_end_date < today)
-    )
-    if tenant_id is not None:
-        returns_q = returns_q.filter(FleetHire.tenant_id == tenant_id)
-
-    return {
-        "overdue_returns": returns_q.scalar() or 0,
-        "missing_documents": len(_missing_docs_for_side(db, tenant_id, side, context)),
-        "overdue_payments": get_weekly_payments(db, tenant_id)["tabs"]["overdue"],
-    }
-
-
-def get_overdue_returns(db: Session, tenant_id: Optional[int]) -> dict:
-    """Detail rows for the Overdue Returns slider: vehicles still on hire whose
-    expected return date has passed. Mirrors the count in ``get_attention``."""
-    today = date.today()
-    q = (
-        db.query(FleetHireVehicle, FleetHire)
-        .join(FleetHire, FleetHireVehicle.hire_id == FleetHire.id)
-        .filter(FleetHire.is_deleted.isnot(True))
-        .filter(func.lower(func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
-        .filter(FleetHireVehicle.hire_end_date.isnot(None))
-        .filter(FleetHireVehicle.hire_end_date < today)
-    )
-    if tenant_id is not None:
-        q = q.filter(FleetHire.tenant_id == tenant_id)
-    items = []
-    for veh, hire in q.order_by(FleetHireVehicle.hire_end_date.asc()).all():
-        end = veh.hire_end_date
-        days = (today - end).days if end else 0
-        model = " ".join(x for x in [veh.make, veh.model] if x)
-        items.append({
-            "registration": veh.registration_number or "—",
-            "model": model or "—",
-            "driver": (hire.driver_name or "").strip() or "—",
-            "due_date": end.strftime("%d %b %Y") if end else "—",
-            "days_overdue": days,
-            "hire_id": hire.id,
-        })
-    return {"items": items}
-
-
-def get_overdue_payments(db: Session, tenant_id: Optional[int]) -> dict:
-    """Detail rows for the Overdue Payments slider: owed weekly payments whose
-    derived due date has passed. Mirrors the count in ``get_attention``."""
-    today = date.today()
-    q = (
-        db.query(FleetHirePayment, FleetHire, FleetHireVehicle)
-        .join(FleetHire, FleetHirePayment.hire_id == FleetHire.id)
-        .outerjoin(FleetHireVehicle, FleetHirePayment.vehicle_id == FleetHireVehicle.id)
-        .filter(FleetHire.is_deleted.isnot(True))
-    )
-    if tenant_id is not None:
-        q = q.filter(FleetHire.tenant_id == tenant_id)
-    items = []
-    for pay, hire, veh in q.all():
-        if (pay.status or "").strip().lower() == "received":
-            continue
-        due = _payment_due_date(hire.payment_hire_start_date, hire.payment_day, pay.week)
-        if not (due and due < today):
-            continue
-        due_amt = _to_float(pay.due_amount)
-        paid = _to_float(pay.paid_amount)
-        outstanding = max(0.0, due_amt - paid)
-        items.append({
-            "registration": (veh.registration_number if veh else "—") or "—",
-            "driver": (hire.driver_name or "").strip() or "—",
-            "amount": f"£{outstanding:,.2f}",
-            "due_date": due.strftime("%d %b %Y"),
-            "days_overdue": (today - due).days,
-            "hire_id": hire.id,
-        })
-    items.sort(key=lambda x: -x["days_overdue"])
-    return {"items": items}
 
 
 _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
@@ -1256,3 +826,4 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
              "sub": "needs action", "progress": 0},
         ],
     }
+

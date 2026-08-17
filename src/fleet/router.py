@@ -5,7 +5,7 @@ The public API stays under /fleet, while each screen/domain owns its own router.
 from fastapi import APIRouter, Depends
 
 from fleet.deps import authenticate
-from fleet.routers.dashboard_router import router as dashboard_router
+from fleet.routers.dashboard import router as dashboard_router
 from fleet.routers.document_router import router as document_router
 from fleet.routers.email_router import router as email_router
 from fleet.routers.generated_document_router import router as generated_document_router
