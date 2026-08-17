@@ -566,8 +566,10 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
     """Cross-hire weekly payment schedule for the dashboard. Buckets every weekly
     payment by its derived due date into Due Today / Due This Week / Overdue /
     Received Today, and returns the actionable (owed) rows for the table."""
-    week_end = date.today() + timedelta(days=7)
     today = date.today()
+    # "This week" = the rest of the current calendar week (through this Sunday), so a
+    # weekly payment falling on next Monday isn't dragged in by a rolling +7 days.
+    week_end = today + timedelta(days=(6 - today.weekday()))
 
     q = (
         db.query(FleetHirePayment, FleetHire, FleetHireVehicle)
@@ -589,9 +591,9 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
 
     # Left-panel summary: money owed by bucket + received so far this week + a
     # per-weekday received breakdown for the mini chart.
-    # "Received" window: rolling last 7 days, so the graph always shows a full week of
-    # context regardless of today's weekday (a calendar Mon→today window is empty on Monday).
-    week_start = today - timedelta(days=6)
+    # "Received" window: this calendar week so far (Monday → today), so a payment taken
+    # last week (e.g. last Thursday) doesn't show up in this week's schedule.
+    week_start = today - timedelta(days=today.weekday())
     amt = {"overdue": 0.0, "due_today": 0.0, "due_this_week": 0.0, "received": 0.0}
     by_day = [0.0] * 7           # received per weekday (this week)
     by_day_overdue = [0.0] * 7   # overdue outstanding, bucketed by due-date weekday
