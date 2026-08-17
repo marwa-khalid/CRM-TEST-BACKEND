@@ -392,7 +392,7 @@ def _canonical_status(raw: Optional[str]) -> str:
     if s in ("on hire", "weekly hire"):
         return "On Hire"
     if s in ("off hire", "off fleet"):
-        return "Off Fleet"
+        return "Off Hire"
     if s == "in service":
         return "In Service"
     if "repair" in s:
@@ -496,7 +496,7 @@ def _effective_vehicle_list(db: Session, tenant_id: Optional[int], context: Opti
 # dropdown. Live on-hire vehicles are counted as On Hire; off-hire as Off Fleet.
 _DONUT_STATUSES = [
     "Available", "On Hire", "In Service", "In Repair",
-    "For Sale", "Off Fleet", "Awaiting Plating", "Awaiting De Fleet",
+    "For Sale", "Off Hire", "Awaiting Plating", "Awaiting De Fleet",
 ]
 
 
@@ -661,19 +661,46 @@ def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] =
 
     cats = _expiry_dates_by_category(db, tenant_id, context)
 
-    # reg -> driver name (via the vehicle's current hire), for the card/slider.
-    driver_by_reg: dict = {}
-    dq = (
-        db.query(FleetVehicleRecord.registration_number, FleetHire.driver_name)
-        .join(FleetHire, FleetVehicleRecord.hire_id == FleetHire.id)
+    # reg -> licensing authority (for the Plate cards/slider, which show the authority
+    # in place of a driver).
+    authority_by_reg: dict = {}
+    aq = (
+        db.query(FleetVehicleRecord.registration_number, FleetVehicleLicensingAuthority.licensing_authority)
+        .join(FleetVehicleLicensingAuthority, FleetVehicleLicensingAuthority.vehicle_record_id == FleetVehicleRecord.id)
         .filter(FleetVehicleRecord.is_deleted.isnot(True))
+        .filter(FleetVehicleLicensingAuthority.is_deleted.isnot(True))
     )
     if tenant_id is not None:
-        dq = dq.filter(FleetVehicleRecord.tenant_id == tenant_id)
-    dq = _ctx(dq, context)
-    for reg, drv in dq.all():
-        if reg and drv and reg not in driver_by_reg:
-            driver_by_reg[reg] = drv
+        aq = aq.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    aq = _ctx(aq, context)
+    for reg, auth in aq.all():
+        if reg and auth and reg not in authority_by_reg:
+            authority_by_reg[reg] = auth
+
+    # reg -> "make model" for the card subtitle.
+    model_by_reg: dict = {}
+    mq = db.query(FleetVehicleRecord.registration_number, FleetVehicleRecord.make, FleetVehicleRecord.model).filter(
+        FleetVehicleRecord.is_deleted.isnot(True)
+    )
+    if tenant_id is not None:
+        mq = mq.filter(FleetVehicleRecord.tenant_id == tenant_id)
+    mq = _ctx(mq, context)
+    for reg, make, model in mq.all():
+        if reg and reg not in model_by_reg:
+            model_by_reg[reg] = " ".join(x for x in [make, model] if x)
+
+    # norm reg -> effective status + current driver, from the SAME effective list the
+    # vehicles cards use (records + live hire overlay). Driving both off this list keeps
+    # the expiry "hire status" and driver in lockstep with the cards — the vehicle
+    # record's hire_id column can be stale, so we never rely on it here.
+    status_by_reg: dict = {}
+    driver_by_reg: dict = {}
+    for v in _effective_vehicle_list(db, tenant_id, context):
+        n = _norm_reg(v.get("registration"))
+        if n and n not in status_by_reg:
+            status_by_reg[n] = v["status"]
+            if (v.get("driver") or "").strip():
+                driver_by_reg[n] = v["driver"].strip()
 
     cards: dict = {}
     for key, _title in _EXPIRY_TITLES + [("service", "Service")]:
@@ -682,7 +709,13 @@ def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] =
         for reg, e in items:
             bucket = _bucket(e)
             if bucket:
-                rows[bucket].append([reg or "—", e.strftime("%d %b %Y"), list(_remaining_label(e, today)), driver_by_reg.get(reg, "—")])
+                # 4th slot: Plate carries the licensing authority, others the driver.
+                # 5th slot: "make model" (used by the Plate cards).
+                extra = authority_by_reg.get(reg, "—") if key == "plate" else (driver_by_reg.get(_norm_reg(reg)) or "—")
+                rows[bucket].append([
+                    reg or "—", e.strftime("%d %b %Y"), list(_remaining_label(e, today)),
+                    extra, model_by_reg.get(reg, ""), status_by_reg.get(_norm_reg(reg), ""),
+                ])
         cards[key] = {
             "tabs": {k: len(v) for k, v in rows.items()},
             "rows": {k: v[:50] for k, v in rows.items()},  # full set for the slider; card shows first 5
@@ -978,15 +1011,20 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
     # Rows are grouped by bucket so the dashboard tabs can filter to one bucket.
     buckets: dict = {"due_today": [], "due_this_week": [], "overdue": [], "received_today": [], "all": []}
 
+    hstatus = "—"  # per-payment hire status; _row captures it via closure (set each iteration)
+
     def _row(reg, cust, due_amt, outstanding, due, label, tone):
         return (due, [reg, cust, f"£{due_amt:,.2f}", f"£{outstanding:,.2f}",
-                      due.strftime("%d %b %Y") if due else "—", [label, tone]])
+                      due.strftime("%d %b %Y") if due else "—", [label, tone], hstatus])
 
     # Left-panel summary: money owed by bucket + received so far this week + a
     # per-weekday received breakdown for the mini chart.
-    week_start = today - timedelta(days=today.weekday())  # Monday
+    # "Received" window: rolling last 7 days, so the graph always shows a full week of
+    # context regardless of today's weekday (a calendar Mon→today window is empty on Monday).
+    week_start = today - timedelta(days=6)
     amt = {"overdue": 0.0, "due_today": 0.0, "due_this_week": 0.0, "received": 0.0}
-    by_day = [0.0] * 7
+    by_day = [0.0] * 7           # received per weekday (this week)
+    by_day_overdue = [0.0] * 7   # overdue outstanding, bucketed by due-date weekday
 
     for pay, hire, veh in q.all():
         due = _payment_due_date(hire.payment_hire_start_date, hire.payment_day, pay.week)
@@ -995,10 +1033,12 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
         outstanding = max(0.0, due_amt - paid)
         reg = veh.registration_number if veh else "—"
         cust = hire.driver_name or "—"
+        hstatus = {"on_hire": "On Hire", "off_hire": "Off Hire"}.get((veh.hire_status or "").strip().lower(), "—") if veh else "—"
 
-        if pay.payment_date == today:
-            buckets["received_today"].append(_row(reg, cust, due_amt, outstanding, due, "Received Today", "green"))
+        # "Received" = paid at some point this week (Mon→today), not just literally today,
+        # so the Received tab reflects the week's activity and feeds the graph's green curve.
         if pay.payment_date and week_start <= pay.payment_date <= today:
+            buckets["received_today"].append(_row(reg, cust, due_amt, outstanding, due, "Received", "green"))
             amt["received"] += paid
             by_day[pay.payment_date.weekday()] += paid
         owed = (pay.status or "").strip().lower() != "received"
@@ -1012,19 +1052,11 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
             elif due < today:
                 buckets["overdue"].append(_row(reg, cust, due_amt, outstanding, due, "Overdue", "red"))
                 amt["overdue"] += outstanding
+                by_day_overdue[due.weekday()] += outstanding
 
-        # Every payment, whatever its state — powers the always-on "View All" list.
-        if not owed:
-            a_label, a_tone = "Received", "green"
-        elif due and due == today:
-            a_label, a_tone = "Due Today", "gray"
-        elif due and today < due <= week_end:
-            a_label, a_tone = "Due This Week", "yellow"
-        elif due and due < today:
-            a_label, a_tone = "Overdue", "red"
-        else:
-            a_label, a_tone = "Upcoming", "gray"
-        buckets["all"].append(_row(reg, cust, due_amt, outstanding, due, a_label, a_tone))
+    # "All" = every actionable payment (the four buckets), not the full historical/future
+    # schedule — otherwise it balloons to every weekly installment ever recorded.
+    buckets["all"] = buckets["overdue"] + buckets["due_today"] + buckets["due_this_week"] + buckets["received_today"]
 
     total = amt["overdue"] + amt["due_today"] + amt["due_this_week"] + amt["received"]
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -1036,7 +1068,7 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
             "overdue": f"£{amt['overdue']:,.0f}",
             "due_today": f"£{amt['due_today']:,.0f}",
             "received": f"£{amt['received']:,.0f}",
-            "by_day": [{"day": d, "amount": round(a)} for d, a in zip(day_names, by_day)],
+            "by_day": [{"day": d, "amount": round(r), "overdue": round(o)} for d, r, o in zip(day_names, by_day, by_day_overdue)],
         },
     }
 
@@ -1153,10 +1185,8 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
     is_vm = module_l.startswith("vehicles")
     ctx = _normalise_context(module_l) if is_vm else None
 
-    # Fleet Performance "Vehicles on Hire" is a daily event count:
-    # how many vehicles went on hire today, not how many are currently on hire.
-    on_hire_now = _on_hire_started_on(db, tenant_id, today, ctx)
-    on_hire_prev = _on_hire_started_on(db, tenant_id, prev_asof, ctx)
+    # "Vehicles on Hire" = how many vehicles are on hire right now (matches the
+    # "of N active vehicles" sub-label + the utilisation card), not a daily event count.
     _eff = _effective_vehicle_list(db, tenant_id, ctx)
     current_on_hire_now = sum(1 for v in _eff if v["status"] == "On Hire")
     current_on_hire_prev = _on_hire_as_of(db, tenant_id, prev_asof, ctx)
@@ -1202,21 +1232,21 @@ def get_stats(db: Session, tenant_id: Optional[int], period: str = "MTD", module
         util_prev = max(0, util_count + (current_on_hire_now - current_on_hire_prev))
         util_prev_pct = round(util_prev / total * 100) if total else 0
 
-    oh_pct, oh_up = _delta(on_hire_now, on_hire_prev)
+    oh_pct, oh_up = _delta(current_on_hire_now, current_on_hire_prev)
     inc_pct, inc_up = _delta(income_now, income_prev)
     av_pct, av_up = _delta(util_now, util_prev_pct)
     ur_pct, ur_up = _delta(urgent_now, urgent_prev, higher_is_better=False)
 
     # Sub-labels + progress bars for the Fleet Performance card.
     period_sub = {"TDY": "Today", "WTD": "Week to date", "MTD": "Month to date", "YTD": "Year to date"}.get(period, "Month to date")
-    oh_progress = round(on_hire_now / total * 100) if total else 0
+    oh_progress = round(current_on_hire_now / total * 100) if total else 0
     inc_progress = max(0, min(100, round(50 + (float(inc_pct) if inc_up else -float(inc_pct)) / 2)))
 
     return {
         "period": period,
         "compare_label": compare,
         "cards": [
-            {"key": "vehicles_on_hire", "label": "Vehicles on Hire", "value": str(on_hire_now), "pct": oh_pct, "up": oh_up,
+            {"key": "vehicles_on_hire", "label": "Vehicles on Hire", "value": str(current_on_hire_now), "pct": oh_pct, "up": oh_up,
              "sub": f"of {total} active vehicles", "progress": oh_progress},
             {"key": "net_income", "label": f"Net Income ({period})", "value": f"£{income_now:,.0f}", "pct": inc_pct, "up": inc_up,
              "sub": period_sub, "progress": inc_progress},
