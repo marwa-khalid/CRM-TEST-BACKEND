@@ -630,9 +630,12 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
                 if due >= week_start:
                     by_day_overdue[due.weekday()] += outstanding
 
-    # "All" = every actionable payment (the four buckets), not the full historical/future
-    # schedule — otherwise it balloons to every weekly installment ever recorded.
-    buckets["all"] = buckets["overdue"] + buckets["due_today"] + buckets["due_this_week"] + buckets["received_today"]
+    # "All" = this week's actionable schedule only: current-week overdue (due this Mon →
+    # yesterday) stays in the schedule, but previous weeks' overdue backlog does NOT — that
+    # lives under the Overdue tab (and is appended at the end of the slider, frontend-side).
+    # The rows below are then sorted by due date, so "All" reads chronologically.
+    overdue_current = [r for r in buckets["overdue"] if r[0] and r[0] >= week_start]
+    buckets["all"] = overdue_current + buckets["due_today"] + buckets["due_this_week"] + buckets["received_today"]
 
     total = amt["overdue"] + amt["due_today"] + amt["due_this_week"] + amt["received"]
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

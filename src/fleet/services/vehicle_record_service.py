@@ -85,8 +85,12 @@ def create_vehicle_record(
     db: Session, tenant_id: int, actor: Optional[int] = None, context: Optional[str] = None,
 ) -> FleetVehicleRecord:
     _ensure_context_column(db)
+    # New registrations default to Available (the user can change it in Vehicle Availability
+    # Options). Matches the dropdown's default so the listing/dashboard read Available from
+    # the start rather than relying on the empty-status fallback.
     record = FleetVehicleRecord(
         tenant_id=tenant_id, created_by=actor, updated_by=actor, context=(context or "skyline"),
+        vehicle_status="available",
     )
     db.add(record)
     db.commit()
