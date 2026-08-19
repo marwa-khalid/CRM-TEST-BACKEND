@@ -585,9 +585,11 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
 
     hstatus = "—"  # per-payment hire status; _row captures it via closure (set each iteration)
 
-    def _row(reg, cust, due_amt, outstanding, due, label, tone):
+    def _row(reg, cust, due_amt, outstanding, due, label, tone, paid):
+        # 8th slot (index 7) = amount part-paid so far, so a partially-paid installment
+        # can render as a single card (Weekly / Partial Received / Balance).
         return (due, [reg, cust, f"£{due_amt:,.2f}", f"£{outstanding:,.2f}",
-                      due.strftime("%d %b %Y") if due else "—", [label, tone], hstatus])
+                      due.strftime("%d %b %Y") if due else "—", [label, tone], hstatus, f"£{paid:,.2f}"])
 
     # Left-panel summary: money owed by bucket + received so far this week + a
     # per-weekday received breakdown for the mini chart.
@@ -607,22 +609,29 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
         cust = hire.driver_name or "—"
         hstatus = {"on_hire": "On Hire", "off_hire": "Off Hire"}.get((veh.hire_status or "").strip().lower(), "—") if veh else "—"
 
-        # "Received" = paid at some point this week (Mon→today), not just literally today,
-        # so the Received tab reflects the week's activity and feeds the graph's green curve.
-        if pay.payment_date and week_start <= pay.payment_date <= today:
-            buckets["received_today"].append(_row(reg, cust, due_amt, outstanding, due, "Received", "green"))
+        # Income + graph reflect any money taken this week (partial or full) — "Received" =
+        # paid at some point this week (Mon→today), feeding the received total + green curve.
+        paid_this_week = bool(pay.payment_date and week_start <= pay.payment_date <= today)
+        if paid_this_week:
             amt["received"] += paid
             by_day[pay.payment_date.weekday()] += paid
-        owed = (pay.status or "").strip().lower() != "received"
-        if owed and due:
+
+        # A part-paid installment is ONE record: it stays under its due-date bucket (Due
+        # Today / This Week / Overdue) carrying the part-paid amount, NOT a separate
+        # "Received" row. Only a fully-settled installment shows as a "Received" row.
+        owed = outstanding > 0 and (pay.status or "").strip().lower() != "received"
+        if not owed:
+            if paid_this_week:
+                buckets["received_today"].append(_row(reg, cust, due_amt, outstanding, due, "Received", "green", paid))
+        elif due:
             if due == today:
-                buckets["due_today"].append(_row(reg, cust, due_amt, outstanding, due, "Due Today", "gray"))
+                buckets["due_today"].append(_row(reg, cust, due_amt, outstanding, due, "Due Today", "gray", paid))
                 amt["due_today"] += outstanding
             elif today < due <= week_end:
-                buckets["due_this_week"].append(_row(reg, cust, due_amt, outstanding, due, "Due This Week", "yellow"))
+                buckets["due_this_week"].append(_row(reg, cust, due_amt, outstanding, due, "Due This Week", "yellow", paid))
                 amt["due_this_week"] += outstanding
             elif due < today:
-                buckets["overdue"].append(_row(reg, cust, due_amt, outstanding, due, "Overdue", "red"))
+                buckets["overdue"].append(_row(reg, cust, due_amt, outstanding, due, "Overdue", "red", paid))
                 amt["overdue"] += outstanding
                 # The graph is "this week" only: a payment overdue from a PREVIOUS week
                 # (due before this Monday) shows in the schedule/overdue tab but not the
@@ -630,10 +639,10 @@ def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
                 if due >= week_start:
                     by_day_overdue[due.weekday()] += outstanding
 
-    # "All" = this week's actionable schedule only: current-week overdue (due this Mon →
+    # "All" = this week's actionable schedule only. Current-week overdue (due this Mon →
     # yesterday) stays in the schedule, but previous weeks' overdue backlog does NOT — that
-    # lives under the Overdue tab (and is appended at the end of the slider, frontend-side).
-    # The rows below are then sorted by due date, so "All" reads chronologically.
+    # only shows under the Overdue tab (and is appended at the END of the slider, frontend-side).
+    # Rows below are sorted by due date, so "All" reads chronologically for the current week.
     overdue_current = [r for r in buckets["overdue"] if r[0] and r[0] >= week_start]
     buckets["all"] = overdue_current + buckets["due_today"] + buckets["due_this_week"] + buckets["received_today"]
 
