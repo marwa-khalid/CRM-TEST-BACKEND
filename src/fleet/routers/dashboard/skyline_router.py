@@ -52,11 +52,13 @@ def stats_route(
 
 @router.get("/dashboard/weekly-payments")
 def weekly_payments_route(
+    today: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
-    """Cross-hire weekly payment schedule (Due Today / This Week / Overdue / Received)."""
-    return common_svc.get_weekly_payments(db, tenant_id)
+    """Cross-hire weekly payment schedule (Due Today / This Week / Overdue / Received).
+    ``today`` (YYYY-MM-DD) is the viewer's local date, so the buckets follow whoever's looking."""
+    return common_svc.get_weekly_payments(db, tenant_id, client_today=today or None)
 
 
 @router.get("/dashboard/attention")

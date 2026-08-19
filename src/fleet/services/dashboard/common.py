@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import re
 from calendar import monthrange
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
@@ -25,6 +26,31 @@ from fleet.models.tables import (
 )
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _uk_today() -> date:
+    """Today's date in the UK business timezone (Europe/London — auto BST/GMT).
+
+    The server's own date (date.today()) breaks near midnight when the host runs in UTC
+    (e.g. Railway) but users are on UK time: an item due 'yesterday' still reads 'Due
+    Today' until the UTC day rolls over. Falls back to date.today() if tz data is missing.
+    """
+    try:
+        return datetime.now(ZoneInfo("Europe/London")).date()
+    except Exception:
+        return date.today()
+
+
+def _resolve_today(client_today: Optional[str] = None) -> date:
+    """The date the dashboard reckons against. Prefer the viewer's own local date (sent by
+    the browser as YYYY-MM-DD) so Due Today / Overdue follow whoever is looking, wherever
+    they are; fall back to the UK business day if it's missing or unparseable."""
+    if client_today:
+        try:
+            return date.fromisoformat(client_today[:10])
+        except ValueError:
+            pass
+    return _uk_today()
 
 
 def _add_months(d: date, months: int) -> date:
@@ -562,11 +588,11 @@ def _payment_due_date(anchor: Optional[date], payment_day: Optional[str], week: 
     return due
 
 
-def get_weekly_payments(db: Session, tenant_id: Optional[int]) -> dict:
+def get_weekly_payments(db: Session, tenant_id: Optional[int], client_today: Optional[str] = None) -> dict:
     """Cross-hire weekly payment schedule for the dashboard. Buckets every weekly
     payment by its derived due date into Due Today / Due This Week / Overdue /
     Received Today, and returns the actionable (owed) rows for the table."""
-    today = date.today()
+    today = _resolve_today(client_today)
     # "This week" = the rest of the current calendar week (through this Sunday), so a
     # weekly payment falling on next Monday isn't dragged in by a rolling +7 days.
     week_end = today + timedelta(days=(6 - today.weekday()))

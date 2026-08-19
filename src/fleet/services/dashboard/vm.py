@@ -56,6 +56,8 @@ from fleet.services.dashboard.common import (
     _expiry_dates_by_category,
     _COMPLIANCE_TITLES,
     _remaining_label,
+    _uk_today,
+    _resolve_today,
     _EXPIRY_TITLES,
     _service_mileage_ready,
     _ensure_service_mileage_columns,
@@ -96,7 +98,7 @@ def get_fleet_vehicles(db: Session, tenant_id: Optional[int], context: Optional[
     off-hire vehicles read as such (never "Available"), and on-hire carries the driver
     + how long it's been out. Empty when there are no vehicles or hires. ``context``
     (cams | skyline) scopes to one Vehicle Management side."""
-    today = date.today()
+    today = _uk_today()
     items = []
     for v in _effective_vehicle_list(db, tenant_id, context):
         model = " ".join(x for x in [v.get("make"), v.get("model")] if x) or "—"
@@ -120,8 +122,10 @@ def get_fleet_vehicles(db: Session, tenant_id: Optional[int], context: Optional[
         if key == "hire":
             start = v.get("hire_start")
             if start:
-                days = max(0, (today - start).days)
-                item["hireInfo"] = f"On Hire for {days} Day{'s' if days != 1 else ''}"
+                # Inclusive of both the start day and today (17th→24th = 8 days),
+                # and at least 1 (a hire that started today counts as day 1).
+                days = max(1, (today - start).days + 1)
+                item["hireInfo"] = f"On Hire from {days} Day{'s' if days != 1 else ''}"
             if (v.get("driver") or "").strip():
                 item["customer"] = v["driver"].strip()
             if (v.get("reference") or "").strip():
@@ -131,10 +135,10 @@ def get_fleet_vehicles(db: Session, tenant_id: Optional[int], context: Optional[
 
 
 # ── Compliance + expiry cards (Road Fund / Plate / MOT / Service) ─────────────
-def get_compliance(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
+def get_compliance(db: Session, tenant_id: Optional[int], context: Optional[str] = None, client_today: Optional[str] = None) -> dict:
     """Per-category compliance: overdue count, % overdue (bar), and counts due
     within 7 and within 30 days."""
-    today = date.today()
+    today = _resolve_today(client_today)
     cats = _expiry_dates_by_category(db, tenant_id, context)
     result = []
     for key, title in _COMPLIANCE_TITLES:
@@ -160,11 +164,11 @@ def get_compliance(db: Session, tenant_id: Optional[int], context: Optional[str]
     return {"categories": result}
 
 
-def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
+def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] = None, client_today: Optional[str] = None) -> dict:
     """Per-category expiry cards. Rows are grouped by bucket (expired / today /
     7 days / 30 days) so the dashboard tabs can filter to a single bucket; tab
     counts are the bucket sizes."""
-    today = date.today()
+    today = _resolve_today(client_today)
     d7, d30 = today + timedelta(days=7), today + timedelta(days=30)
 
     def _bucket(e: date):
@@ -244,29 +248,47 @@ def get_expiries(db: Session, tenant_id: Optional[int], context: Optional[str] =
 
 def get_servicing_due(db: Session, tenant_id: Optional[int], context: Optional[str] = None) -> dict:
     """Servicing Due card — mileage-based (distinct from the date-driven document
-    cards). For each vehicle:  remaining = service_due_mileage − current_mileage.
-    Bucketed Overdue (past the service odometer) / Due within 500 mi / Due within
-    1,000 mi; each row carries the current mileage, the service-due odometer and a
-    status label. Vehicles further than 1,000 miles out aren't surfaced."""
-    _ensure_service_mileage_columns(db)
+    cards). Both mileages come from the vehicle's Servicing Details (its latest service
+    record): 'Serviced At Mileage' is the current odometer and 'Next Service Due At' is the
+    target, so remaining = next_service_due_at − serviced_at_mileage. Bucketed Overdue (past
+    the service odometer) / Due within 500 mi / Due within 1,000 mi; each row carries the
+    current mileage, the service-due odometer and a status label. Vehicles further than 1,000
+    miles out — or with no serviced / next-due figures logged — aren't surfaced."""
+    def _to_int(value) -> Optional[int]:
+        digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+        return int(digits) if digits else None
 
     q = (
         db.query(
+            FleetVehicleRecord.id,
             FleetVehicleRecord.registration_number,
-            FleetVehicleRecord.current_mileage,
-            FleetVehicleRecord.service_due_mileage,
+            FleetVehicleService.serviced_at_mileage,
+            FleetVehicleService.next_service_due_at,
+            FleetVehicleService.serviced_on,
+            FleetVehicleService.id,
         )
+        .join(FleetVehicleService, FleetVehicleService.vehicle_record_id == FleetVehicleRecord.id)
         .filter(FleetVehicleRecord.is_deleted.isnot(True))
-        .filter(FleetVehicleRecord.current_mileage.isnot(None))
-        .filter(FleetVehicleRecord.service_due_mileage.isnot(None))
+        .filter(FleetVehicleService.is_deleted.isnot(True))
     )
     if tenant_id is not None:
         q = q.filter(FleetVehicleRecord.tenant_id == tenant_id)
     q = _ctx(q, context)
 
+    # One row per vehicle = its LATEST service (by serviced date, then record id) that has
+    # BOTH a serviced mileage and a next-service-due mileage logged.
+    latest: dict = {}
+    for vid, reg, at_mileage, due_at, serviced_on, svc_id in q.all():
+        cur, due = _to_int(at_mileage), _to_int(due_at)
+        if cur is None or due is None:
+            continue
+        key = (serviced_on or date.min, svc_id)
+        if vid not in latest or key > latest[vid][3]:
+            latest[vid] = (reg, cur, due, key)
+
     rows: dict = {"overdue": [], "within_500": [], "within_1000": []}
     # Soonest-due first (smallest remaining, i.e. most overdue, at the top).
-    computed = [(reg, cur, due, due - cur) for reg, cur, due in q.all()]
+    computed = [(reg, cur, due, due - cur) for reg, cur, due, _ in latest.values()]
     for reg, cur, due, remaining in sorted(computed, key=lambda r: r[3]):
         vreg = reg or "—"
         cur_s, due_s = f"{cur:,}", f"{due:,}"

@@ -46,20 +46,24 @@ def fleet_vehicles_route(
 @router.get("/dashboard/compliance")
 def compliance_route(
     context: str = "",
+    today: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
     """Per-category compliance summary (MOT / Plate / Road Fund / Service).
-    ``context`` (cams | skyline) scopes to one Vehicle Management side."""
-    return vm_svc.get_compliance(db, tenant_id, context=context or None)
+    ``context`` (cams | skyline) scopes to one Vehicle Management side.
+    ``today`` (YYYY-MM-DD) is the viewer's local date, so buckets follow whoever's looking."""
+    return vm_svc.get_compliance(db, tenant_id, context=context or None, client_today=today or None)
 
 
 @router.get("/dashboard/expiries")
 def expiries_route(
     context: str = "",
+    today: str = "",
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
 ):
     """Expiry cards (Road Fund / MOT / Plate): tab counts + soonest rows.
-    ``context`` (cams | skyline) scopes to one Vehicle Management side."""
-    return vm_svc.get_expiries(db, tenant_id, context=context or None)
+    ``context`` (cams | skyline) scopes to one Vehicle Management side.
+    ``today`` (YYYY-MM-DD) is the viewer's local date, so buckets follow whoever's looking."""
+    return vm_svc.get_expiries(db, tenant_id, context=context or None, client_today=today or None)
