@@ -493,6 +493,44 @@ def list_due_reminders(db: Session, side: str = "vehicles", today: Optional[date
                 "hire_id": record.hire_id,
             })
 
+    # ── Service due (last service + 6-month interval) — same 7-day window ──────
+    # Mirrors the Road Fund / Plate / MOT reminders so Servicing shows up in the
+    # modal too. Service-due date = latest serviced_on + 182 days.
+    latest_service: Dict[int, date] = {}
+    for vid, serviced_on in (
+        db.query(FleetVehicleService.vehicle_record_id, FleetVehicleService.serviced_on)
+        .filter(FleetVehicleService.is_deleted.isnot(True))
+        .filter(FleetVehicleService.serviced_on.isnot(None))
+        .all()
+    ):
+        if vid is None or serviced_on is None:
+            continue
+        if vid not in latest_service or serviced_on > latest_service[vid]:
+            latest_service[vid] = serviced_on
+    for vid, serviced_on in latest_service.items():
+        due = serviced_on + timedelta(days=182)
+        if due > window_end:
+            continue
+        record = records_by_id.get(vid)
+        if record is None:
+            record = (
+                db.query(FleetVehicleRecord)
+                .filter(FleetVehicleRecord.id == vid)
+                .filter(FleetVehicleRecord.is_deleted.isnot(True))
+                .first()
+            )
+            if not record:
+                continue
+            records_by_id[vid] = record
+        label = _vehicle_label(record)
+        out.append({
+            "kind": "service",
+            "title": f"Service {_due_phrase(due, today)} — {label}",
+            "vehicle": label,
+            "expiry_date": due.isoformat(),
+            "hire_id": record.hire_id,
+        })
+
     out.sort(key=lambda x: x["expiry_date"])
     return out
 

@@ -98,6 +98,10 @@ def get_hire_trend(
     mode = (mode or "").upper()
     today = date.today()
     dates = _hire_start_dates(db, tenant_id, status)
+    # On/Off Hire series for the two adjacent bars — independent of the Status
+    # filter — used by both the period views and the YoY / MoM / Custom compares.
+    dates_on = _hire_start_dates(db, tenant_id, "on_hire")
+    dates_off = _hire_start_dates(db, tenant_id, "off_hire")
 
     # ── Comparison modes: two totals, previous vs current ─────────────────────
     if mode == "MOM":
@@ -106,7 +110,8 @@ def get_hire_trend(
         nxt = _add_months(cur, 1)
         return {
             "labels": [_month_label(prev), _month_label(cur)],
-            "values": [_count_between(dates, prev, cur), _count_between(dates, cur, nxt)],
+            "values": [_count_between(dates_on, prev, cur), _count_between(dates_on, cur, nxt)],
+            "values_off": [_count_between(dates_off, prev, cur), _count_between(dates_off, cur, nxt)],
             "caption": f"{_month_label(prev)} vs {_month_label(cur, True)}",
             "comparison_note": "from last month",
         }
@@ -116,7 +121,8 @@ def get_hire_trend(
         nxt_start = date(today.year + 1, 1, 1)
         return {
             "labels": [str(today.year - 1), str(today.year)],
-            "values": [_count_between(dates, prev_start, cur_start), _count_between(dates, cur_start, nxt_start)],
+            "values": [_count_between(dates_on, prev_start, cur_start), _count_between(dates_on, cur_start, nxt_start)],
+            "values_off": [_count_between(dates_off, prev_start, cur_start), _count_between(dates_off, cur_start, nxt_start)],
             "caption": f"{today.year - 1} vs {today.year}",
             "comparison_note": "from last year",
         }
@@ -127,18 +133,19 @@ def get_hire_trend(
         try:
             if ct == "year":
                 ya, yb = int(a), int(b)
-                va = _count_between(dates, date(ya, 1, 1), date(ya + 1, 1, 1))
-                vb = _count_between(dates, date(yb, 1, 1), date(yb + 1, 1, 1))
+                ra = (date(ya, 1, 1), date(ya + 1, 1, 1))
+                rb = (date(yb, 1, 1), date(yb + 1, 1, 1))
                 la, lb = str(ya), str(yb)
             else:  # month, a/b are "YYYY-MM"
                 sa = date(int(a[:4]), int(a[5:7]), 1)
                 sb = date(int(b[:4]), int(b[5:7]), 1)
-                va = _count_between(dates, sa, _add_months(sa, 1))
-                vb = _count_between(dates, sb, _add_months(sb, 1))
+                ra = (sa, _add_months(sa, 1))
+                rb = (sb, _add_months(sb, 1))
                 la, lb = _month_label(sa, True), _month_label(sb, True)
             return {
                 "labels": [la, lb],
-                "values": [va, vb],
+                "values": [_count_between(dates_on, *ra), _count_between(dates_on, *rb)],
+                "values_off": [_count_between(dates_off, *ra), _count_between(dates_off, *rb)],
                 "caption": f"{la} vs {lb}",
                 "comparison_note": f"vs {la}",
             }
@@ -193,9 +200,15 @@ def get_hire_trend(
             labels.append(_MONTHS[m - 1])
         caption = f"{_MONTHS[0]}–{_MONTHS[today.month - 1]} {today.year}"
 
+    # Period views show two adjacent bars per bucket: On Hire and Off Hire counts,
+    # side by side (independent of the Status filter, which still scopes the
+    # comparison modes above via ``dates``).
+    dates_on = _hire_start_dates(db, tenant_id, "on_hire")
+    dates_off = _hire_start_dates(db, tenant_id, "off_hire")
     return {
         "labels": labels,
-        "values": [_count_between(dates, s, e) for s, e in ranges],
+        "values": [_count_between(dates_on, s, e) for s, e in ranges],
+        "values_off": [_count_between(dates_off, s, e) for s, e in ranges],
         "caption": caption,
         "comparison_note": None,
     }
