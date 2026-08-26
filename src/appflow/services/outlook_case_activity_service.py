@@ -345,6 +345,50 @@ class OutlookCaseActivityService:
             print(f"[OutlookCaseActivityService] Graph search failed: {exc}")
             return []
 
+        # $search on personal (outlook.com) mailboxes matches the subject/metadata but
+        # NOT the message body — so a reference that only appears in the BODY (e.g. a
+        # vehicle reg like OV66HFF, or "OV66 HFF") is missed. Augment the results with a
+        # local scan of recent messages: strip HTML, drop spaces/hyphens, and substring-
+        # match the reference against subject + body.
+        by_id = {m.get("id"): m for m in messages if m.get("id")}
+
+        def _norm(s: str) -> str:
+            return re.sub(r"[\s\-]", "", re.sub(r"<[^>]+>", " ", s or "")).upper()
+
+        target = _norm(safe_ref)
+        try:
+            scan_url = _mailbox_url("messages")
+            scan_params = {
+                "$select": (
+                    "id,subject,from,toRecipients,receivedDateTime,"
+                    "bodyPreview,body,hasAttachments,webLink"
+                ),
+                "$top": "100",
+                "$orderby": "receivedDateTime desc",
+            }
+            pages = 0
+            while scan_url and pages < 2:  # up to 200 most-recent messages
+                sr = requests.get(
+                    scan_url, headers=headers,
+                    params=scan_params if pages == 0 else None, timeout=20,
+                )
+                sr.raise_for_status()
+                sd = sr.json()
+                for m in sd.get("value", []):
+                    mid = m.get("id")
+                    if not mid or mid in by_id:
+                        continue
+                    if target and (target in _norm(m.get("subject") or "")
+                                   or target in _norm((m.get("body") or {}).get("content") or "")):
+                        by_id[mid] = m
+                scan_url = sd.get("@odata.nextLink")
+                pages += 1
+        except Exception as exc:
+            print(f"[OutlookCaseActivityService] body scan failed: {exc}")
+
+        messages = list(by_id.values())
+        print("GRAPH MESSAGE COUNT (with body scan):", len(messages))
+
         enriched = []
 
         for msg in messages:
