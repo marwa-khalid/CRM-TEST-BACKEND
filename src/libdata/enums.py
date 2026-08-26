@@ -464,3 +464,16 @@ class HistoryLogType(Enum):
     PAV_SENT_TO_CLIENT = "pav_sent_to_client"
     FLEET_OFF_HIRE_INSTRUCTED = "fleet_off_hire_instructed"
     WITNESS_QUESTIONNAIRE_SUBMITTED = "witness_questionnaire_submitted"
+
+
+# Case History section (distinct from the file-based Case Activity / HistoryActivities):
+# user-recorded case communications, notes and diary entries.
+#   SL Send Letter | SE Send Email | IC Incoming Call | OC Outgoing Call | NT Note | DY Diary
+class CaseHistoryActionType(Enum):
+    SEND_LETTER = "send_letter"
+    SEND_EMAIL = "send_email"
+    INCOMING_EMAIL = "incoming_email"
+    INCOMING_CALL = "incoming_call"
+    OUTGOING_CALL = "outgoing_call"
+    NOTE = "note"
+    DIARY = "diary"

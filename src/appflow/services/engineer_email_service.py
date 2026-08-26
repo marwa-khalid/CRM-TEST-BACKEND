@@ -421,6 +421,38 @@ def send_engineer_instruction_email(
             tenant_id=tenant_id
         )
 
+        # Also log to the Case History screen as a Send Email (SE) record, with the
+        # instruction document attached (viewable in the detail pane). Best-effort.
+        try:
+            from appflow.services.case_history_service import CaseHistoryService
+            from libdata.enums import CaseHistoryActionType
+
+            engineer_email = getattr(data, "engineer_email", "") or recipient
+            # Handler = the claim's General Details handler (handler_id → Handler.label).
+            claim_row = db.query(Claim).filter(Claim.id == claim_id).first()
+            handler_label = ""
+            if claim_row and getattr(claim_row, "handler", None):
+                handler_label = getattr(claim_row.handler, "label", "") or ""
+            CaseHistoryService.log_document_record(
+                db,
+                claim_id,
+                action_type=CaseHistoryActionType.SEND_EMAIL,
+                subject=subject,
+                details="Engineer instruction letter sent.",
+                correspondent=engineer_email,
+                handler=handler_label or None,
+                body_html=body,
+                documents=[{
+                    "name": "Engineer Instruction & Letter.docx",
+                    "data": doc_content,
+                    "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }],
+                source="email",
+                current_user=current_user,
+            )
+        except Exception as ch_exc:
+            print(f"[EngineerEmail] Case History SE log failed: {ch_exc}")
+
         return {
             "status": "success",
             "delivery": result,

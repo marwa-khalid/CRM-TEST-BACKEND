@@ -42,6 +42,13 @@ def _mailbox_url(path: str = "", context: str = "read") -> str:
     return f"{base}/{clean_path}" if clean_path else base
 
 
+def _graph_recipients(to_email: str) -> list:
+    """Build a Graph toRecipients list from a To field that may hold several
+    addresses (the History forward modal joins recipient pills with commas)."""
+    addrs = [a.strip() for a in re.split(r"[;,]", to_email or "") if a.strip()]
+    return [{"emailAddress": {"address": a}} for a in addrs]
+
+
 class OutlookCaseActivityService:
     # ------------------------------------------------------------------
     # Main entry: fetch emails matching a case reference
@@ -241,13 +248,7 @@ class OutlookCaseActivityService:
                     "contentType": "HTML" if is_html else "Text",
                     "content": comment or "",
                 },
-                "toRecipients": [
-                    {
-                        "emailAddress": {
-                            "address": to_email,
-                        }
-                    }
-                ],
+                "toRecipients": _graph_recipients(to_email),
                 "attachments": attachments or [],
             },
             "saveToSentItems": True,
@@ -414,6 +415,12 @@ class OutlookCaseActivityService:
             sender_name = from_info.get("name") or ""
             sender_email = from_info.get("address") or ""
 
+            to_recipients = []
+            for rcpt in (msg.get("toRecipients") or []):
+                addr = ((rcpt or {}).get("emailAddress") or {}).get("address")
+                if addr:
+                    to_recipients.append(addr)
+
             received_str = msg.get("receivedDateTime") or ""
             received_at: Optional[datetime] = None
 
@@ -487,6 +494,7 @@ class OutlookCaseActivityService:
                     "message_id": msg.get("id") or "",
                     "web_link": outlook_web_link,
                     "has_attachments": bool(msg.get("hasAttachments")),
+                    "to_recipients": to_recipients,
                 },
             )
 
@@ -600,13 +608,7 @@ class OutlookCaseActivityService:
 
         payload = {
             "comment": comment or "",
-            "toRecipients": [
-                {
-                    "emailAddress": {
-                        "address": to_email,
-                    }
-                }
-            ],
+            "toRecipients": _graph_recipients(to_email),
         }
 
         url = _mailbox_url(f"messages/{message_id}/forward")
@@ -857,9 +859,7 @@ class OutlookCaseActivityService:
                 return False
 
             update_payload = {
-                "toRecipients": [
-                    {"emailAddress": {"address": to_email}}
-                ],
+                "toRecipients": _graph_recipients(to_email),
                 "body": {
                     "contentType": "HTML" if is_html else "Text",
                     "content": comment or "",

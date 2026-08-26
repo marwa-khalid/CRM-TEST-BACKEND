@@ -23,6 +23,7 @@ from appflow.router.driver_check import driver_check_router
 from appflow.router.history_activity import history_router
 from appflow.router.import_jobs import import_job_router
 from appflow.router.case_activity import case_activity_router
+from appflow.router.case_history import case_history_router
 from appflow.router.document_library import document_library_router
 from appflow.router.vehicle_damage_ai_report import vehicle_damage_report_router
 from appflow.router.hire_record import hire_record_router
@@ -94,6 +95,8 @@ root_router.include_router(driver_check_router)
 root_router.include_router(history_router)
 
 root_router.include_router(case_activity_router)
+
+root_router.include_router(case_history_router)
 
 root_router.include_router(document_library_router)
 

@@ -14,7 +14,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declared_attr
 
 from datetime import datetime
-from libdata.enums import WeatherTypeEnum,CurrencyTypeEnum,CountryCodeEnum,PersonRoleEnum,DriverCheckImageType,HistoryLogType
+from libdata.enums import WeatherTypeEnum,CurrencyTypeEnum,CountryCodeEnum,PersonRoleEnum,DriverCheckImageType,HistoryLogType,CaseHistoryActionType
 
 Base = declarative_base()
 
@@ -1376,6 +1376,35 @@ class HistoryActivities(BaseModel, AuditByMixin):
     claim_id = Column(Integer, ForeignKey("claims.id", ondelete="CASCADE"), nullable=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True)
     file_type = Column(Enum(HistoryLogType),nullable=True)
+
+
+class CaseHistory(BaseModel, AuditByMixin):
+    """Case History section — a chronological, user-recorded log of case
+    communications (letters, emails, calls), notes and diary entries. Distinct
+    from the file-based Case Activity feed (HistoryActivities). Each supported
+    action creates one row here; `payload` holds the type-specific detail
+    (email to/cc/bcc/body, letter template, call phone/phrase, note tag,
+    diary action/assignee/due)."""
+    __tablename__ = "case_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Claims records keep claim_id; fleet records (hires / VM vehicles) leave it NULL
+    # and use the polymorphic scope below instead.
+    claim_id = Column(Integer, ForeignKey("claims.id", ondelete="CASCADE"), nullable=True, index=True)
+    # Polymorphic scope: what this record is attached to. 'claim' (default) mirrors
+    # claim_id; fleet uses 'fleet_hire' | 'vm_cams' | 'vm_skyline' with scope_id = the
+    # entity's id. Lets Claims and the self-contained Fleet module share this table.
+    scope_type = Column(String(20), nullable=False, server_default="claim", index=True)
+    scope_id = Column(Integer, nullable=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    action_type = Column(Enum(CaseHistoryActionType), nullable=False, index=True)
+    # When the activity was recorded/posted (shown as "Posted:" in the list).
+    posted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True, index=True)
+    correspondent = Column(String(255), nullable=True)   # person/org the activity is with
+    handler = Column(String(255), nullable=True)         # user/handler who recorded it
+    subject = Column(String(500), nullable=True)         # letter/email subject
+    details = Column(Text, nullable=True)                # description shown against the record
+    payload = Column(JSONB, nullable=True)               # type-specific fields
 
 
 class PlatingAdditionalCharges(BaseModel, AuditByMixin):
