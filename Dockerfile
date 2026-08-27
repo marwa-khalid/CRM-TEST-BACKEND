@@ -49,6 +49,10 @@ COPY --from=tesseract-build /usr/local /usr/local
 # plus tesseract-ocr (pytesseract, used for scanned-PDF OCR fallback) and
 # poppler-utils (pdf2image.convert_from_path / pdfinfo). Without these the
 # scanned-PDF OCR path raises TesseractNotFoundError and the import job fails.
+# libreoffice-writer / -calc: headless soffice converts Word (.docx) and Excel
+# (.xlsx) attachments to PDF so Case History previews them as exact page-image
+# snapshots (see CaseHistoryService._office_to_pdf). Just Writer + Calc, not the
+# full LibreOffice suite, to keep the image small.
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -56,6 +60,8 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     tesseract-ocr \
     poppler-utils \
+    libreoffice-writer \
+    libreoffice-calc \
     && rm -rf /var/lib/apt/lists/* \
     && tesseract --version
 

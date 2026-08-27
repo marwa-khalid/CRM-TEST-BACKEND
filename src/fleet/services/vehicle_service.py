@@ -187,7 +187,7 @@ def _sync_record_status_for_hire(db: Session, registration_number: Optional[str]
             break
 
 
-def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_id: int, data: dict) -> FleetHireVehicle:
+def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_id: int, data: dict, actor_id: Optional[int] = None) -> FleetHireVehicle:
     get_hire_or_404(db, hire_id, tenant_id)
     vehicle = (
         db.query(FleetHireVehicle)
@@ -197,6 +197,8 @@ def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
 
+    prev_status = (vehicle.hire_status or "").strip().lower()  # detect a real transition
+
     for key, value in data.items():
         if hasattr(vehicle, key):
             setattr(vehicle, key, value)
@@ -204,6 +206,7 @@ def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_
     if {"registration_number", "make", "model", "transmission"} & set(data.keys()):
         _sync_register_details(db, vehicle)
 
+    new_status = (data.get("hire_status") or "").strip().lower() if "hire_status" in data else None
     if data.get("hire_status") == "on_hire":
         _set_register_activation(db, vehicle.registration_number, True)
         _sync_record_status_for_hire(db, vehicle.registration_number, True, vehicle.hire_id)
@@ -213,6 +216,18 @@ def update_vehicle(db: Session, hire_id: int, tenant_id: Optional[int], vehicle_
 
     db.commit()
     db.refresh(vehicle)
+
+    # Auto-log the on/off-hire movement (MO) to the hire's History — only on an
+    # actual status change, so a re-save of the same status doesn't duplicate rows.
+    if new_status in ("on_hire", "off_hire") and new_status != prev_status:
+        from fleet.history_log import log_hire_movement
+        log_hire_movement(
+            db,
+            hire_id,
+            registration=vehicle.registration_number,
+            on_hire=new_status == "on_hire",
+            actor=actor_id,
+        )
 
     return vehicle
 

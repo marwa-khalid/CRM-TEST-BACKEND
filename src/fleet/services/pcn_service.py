@@ -73,6 +73,15 @@ def add_pcn_document(
     file: UploadFile,
 ) -> FleetPcnDocument:
     pcn = get_or_create_pcn(db, hire_id, tenant_id, actor_id)
+    # Snapshot the bytes before the S3 upload consumes the stream, so a PCN Notice
+    # can also be logged (with a previewable copy) to the hire's History as SL.
+    raw_bytes = b""
+    try:
+        file.file.seek(0)
+        raw_bytes = file.file.read()
+        file.file.seek(0)
+    except Exception:
+        raw_bytes = b""
     result = S3Service().upload_task_attachment_with_fallback(file)
     user_name = actor_name_for(db, actor_id)
 
@@ -97,6 +106,21 @@ def add_pcn_document(
     ))
     db.commit()
     db.refresh(doc)
+
+    # PCN correspondence is logged to the hire's History: the Notice + appeal /
+    # liability-transfer / council letters as Send Letter (SL), a payment receipt as
+    # Note (NT), each with the file previewable.
+    if raw_bytes:
+        from fleet.history_log import log_pcn_document
+        log_pcn_document(
+            db,
+            hire_id,
+            doc_type=doc_type,
+            file_name=getattr(file, "filename", None) or "PCN Document",
+            data=raw_bytes,
+            content_type=getattr(file, "content_type", None),
+            actor=actor_id,
+        )
     return doc
 
 
@@ -185,12 +209,26 @@ def upsert_pcn_reminder(
         reminder = FleetPcnReminder(pcn_id=pcn.id, reminder_type=reminder_type, created_by=actor_id)
         db.add(reminder)
 
+    prev_date = reminder.reminder_date  # log a Diary entry only when the date changes
+
     for key, value in data.items():
         if hasattr(reminder, key):
             setattr(reminder, key, value)
 
     db.commit()
     db.refresh(reminder)
+
+    # A newly set / changed reminder date is logged to the hire's History as Diary (DY).
+    if reminder.reminder_date and reminder.reminder_date != prev_date:
+        from fleet.history_log import log_pcn_reminder
+        log_pcn_reminder(
+            db,
+            hire_id,
+            reminder_type=reminder_type,
+            reminder_date=reminder.reminder_date,
+            reminder_time=reminder.reminder_time,
+            actor=actor_id,
+        )
     # Surface this PCN reminder on the Skyline calendar.
     from fleet.services import skyline_reminder_service
     try:

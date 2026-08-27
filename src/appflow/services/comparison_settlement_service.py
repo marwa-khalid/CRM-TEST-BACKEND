@@ -135,11 +135,15 @@ class ComparisonSettlementService:
             payload.claim_id, db, payload.hire_vehicle_id
         )
         if existing:
+            prev_status = existing.settlement_status
             for k, v in payload.model_dump(exclude={"claim_id"}).items():
                 setattr(existing, k, v)
             existing.updated_by = current_user
             db.commit()
             db.refresh(existing)
+            ComparisonSettlementService._log_settlement_status(
+                db, payload.claim_id, prev_status, existing.settlement_status, current_user
+            )
             return existing
         record = ComparisonSettlement(
             **payload.model_dump(),
@@ -149,7 +153,31 @@ class ComparisonSettlementService:
         db.add(record)
         db.commit()
         db.refresh(record)
+        ComparisonSettlementService._log_settlement_status(
+            db, payload.claim_id, None, record.settlement_status, current_user
+        )
         return record
+
+    @staticmethod
+    def _log_settlement_status(db, claim_id, old_status, new_status, current_user) -> None:
+        """Log a settlement status change to the claim's Case History as a Note (NT)."""
+        new = (new_status or "").strip()
+        if not new or new == (old_status or "").strip():
+            return
+        try:
+            from appflow.services.case_history_service import CaseHistoryService
+            from libdata.enums import CaseHistoryActionType
+            CaseHistoryService.log_document_record(
+                db, claim_id,
+                action_type=CaseHistoryActionType.NOTE,
+                details=f"Settlement {new}",
+                subject="Settlement",
+                source="note",
+                current_user=current_user,
+                scope_type="claim", scope_id=claim_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the settlement save
+            print(f"[Claims history] settlement log failed: {exc}")
 
     @staticmethod
     def send_difference_email(payload, db: Session):

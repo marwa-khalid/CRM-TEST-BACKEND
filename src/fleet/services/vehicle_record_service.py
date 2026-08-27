@@ -210,12 +210,19 @@ def update_vehicle_record(
         )
         if any(vehicle_service._normalise_registration(o.registration_number) == target for o in others):
             raise HTTPException(status_code=409, detail=f"A vehicle with registration '{new_reg}' already exists.")
+    prev_status = record.vehicle_status  # detect a status transition for History logging
     for field, value in payload.items():
         if hasattr(record, field):
             setattr(record, field, value)
     record.updated_by = actor
     db.commit()
     db.refresh(record)
+
+    # Auto-log a vehicle status change (Available / On Hire / SORN / Sold / …) to the
+    # vehicle's History — on/off-hire as Movement (MO), lifecycle changes as Note (NT).
+    if "vehicle_status" in payload and record.vehicle_status != prev_status:
+        from vehicles.history_log import log_vm_status_change
+        log_vm_status_change(db, record, prev_status, record.vehicle_status, actor)
     # Road tax expiry is derived from the renewal date, and drives a calendar
     # event + reminder schedule — rebuild both whenever the renewal date moves.
     if "road_tax_renewed_on" in payload:

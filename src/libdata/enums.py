@@ -478,3 +478,4 @@ class CaseHistoryActionType(Enum):
     OUTGOING_CALL = "outgoing_call"
     NOTE = "note"
     DIARY = "diary"
+    MOVEMENT = "movement"  # MO — on/off-hire vehicle movements (fleet)

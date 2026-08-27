@@ -341,6 +341,21 @@ def update_claim(db: Session, claim_id: int,user_id: int,tenant_id: int, payload
             if claim.case_status_id:
                 cs = db.query(CaseStatus).filter(CaseStatus.id == claim.case_status_id).first()
                 label = (cs.label if cs else "") or ""
+            # Log the status change to the claim's Case History as a Note (NT).
+            try:
+                from appflow.services.case_history_service import CaseHistoryService
+                from libdata.enums import CaseHistoryActionType
+                CaseHistoryService.log_document_record(
+                    db, claim.id,
+                    action_type=CaseHistoryActionType.NOTE,
+                    details=f"Case status changed to {label}" if label else "Case status updated",
+                    subject="Status Change",
+                    source="note",
+                    current_user=user_id,
+                    scope_type="claim", scope_id=claim.id,
+                )
+            except Exception as exc:  # noqa: BLE001 — never break the update
+                print(f"[Claims history] status-change log failed: {exc}")
             ref = build_case_reference(claim.id, db)
             create_notification(
                 db,

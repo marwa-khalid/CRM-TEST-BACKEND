@@ -1,9 +1,10 @@
 from datetime import date, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from fleet.deps import get_session, get_tenant_id
+from fleet.deps import actor_id, get_session, get_tenant_id
 from fleet.models.schemas import FleetWhatsAppRequest, FleetWhatsAppResponse
 from fleet.services.common import get_hire_or_404
 from fleet.services.whatsapp_service import (
@@ -71,6 +72,7 @@ def _template_params(kind: str, hire) -> list:
 
 def _send_hire_whatsapp(
     to_number: str, message: str, kind: str = "", hire=None,
+    db=None, actor: Optional[int] = None,
 ) -> FleetWhatsAppResponse:
     body = (message or "").strip()
     template = template_for(kind)
@@ -85,6 +87,11 @@ def _send_hire_whatsapp(
     result = send_whatsapp(normalised, body, kind=kind, params=params)
     if not result.get("sent"):
         raise HTTPException(status_code=502, detail=result.get("reason") or "WhatsApp message failed to send.")
+
+    # Log the outbound message to the hire's History as Send Email (SE).
+    if db is not None and hire is not None:
+        from fleet.history_log import log_hire_message
+        log_hire_message(db, hire.id, to_number=normalised, body=body, kind=kind, actor=actor)
     return _result_to_response(result, normalised)
 
 
@@ -94,13 +101,14 @@ def send_custom_whatsapp_route(
     payload: FleetWhatsAppRequest,
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
+    actor: int = Depends(actor_id),
 ):
     hire = get_hire_or_404(db, hire_id, tenant_id)
     to_number = payload.mobile or hire.driver_mobile or ""
     # Free-form text uses the message edited in the modal. When an approved
     # template is configured for this kind, WhatsApp sends the approved wording
     # instead and the edited text is ignored — templates cannot be altered.
-    return _send_hire_whatsapp(to_number, payload.message, payload.kind or "", hire)
+    return _send_hire_whatsapp(to_number, payload.message, payload.kind or "", hire, db=db, actor=actor)
 
 
 @router.post("/hire/{hire_id}/whatsapp/on-hire", response_model=FleetWhatsAppResponse)
@@ -108,6 +116,7 @@ def send_on_hire_whatsapp_route(
     hire_id: int,
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
+    actor: int = Depends(actor_id),
 ):
     hire = get_hire_or_404(db, hire_id, tenant_id)
-    return _send_hire_whatsapp(hire.driver_mobile or "", ON_HIRE_WHATSAPP_BODY, "on_hire", hire)
+    return _send_hire_whatsapp(hire.driver_mobile or "", ON_HIRE_WHATSAPP_BODY, "on_hire", hire, db=db, actor=actor)

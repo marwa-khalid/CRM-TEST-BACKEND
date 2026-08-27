@@ -39,8 +39,9 @@ def update_vehicle_route(
     payload: VehicleUpdate,
     db: Session = Depends(get_session),
     tenant_id: int = Depends(get_tenant_id),
+    actor: int = Depends(actor_id),
 ):
-    return vehicle_service.update_vehicle(db, hire_id, tenant_id, vehicle_id, payload.model_dump(exclude_unset=True))
+    return vehicle_service.update_vehicle(db, hire_id, tenant_id, vehicle_id, payload.model_dump(exclude_unset=True), actor)
 
 
 @router.delete("/hire/{hire_id}/vehicles/{vehicle_id}")

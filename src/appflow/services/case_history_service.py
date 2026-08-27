@@ -533,57 +533,144 @@ class CaseHistoryService:
             return {"type": "image", "file_name": name, "url": f"data:{mime};base64,{b64}", "pages": []}
 
         if "pdf" in ctype or lname.endswith(".pdf"):
-            try:
-                import io
-                import fitz
-                from PIL import Image, ImageChops
-
-                pdf = fitz.open(stream=raw, filetype="pdf")
-                pages = []
-                page_no = 0
-                for i in range(len(pdf)):
-                    pix = pdf.load_page(i).get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
-                    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-                    # Trim surrounding white margins so the preview isn't mostly blank;
-                    # a page that's entirely blank (bbox is None) is skipped.
-                    bg = Image.new("RGB", img.size, (255, 255, 255))
-                    bbox = ImageChops.difference(img, bg).getbbox()
-                    if not bbox:
-                        continue
-                    pad = 12
-                    l, t, r2, b2 = bbox
-                    img = img.crop((max(0, l - pad), max(0, t - pad),
-                                    min(img.width, r2 + pad), min(img.height, b2 + pad)))
-                    out = io.BytesIO()
-                    img.save(out, "PNG")
-                    page_no += 1
-                    b64 = base64.b64encode(out.getvalue()).decode("utf-8")
-                    pages.append({"page": page_no, "image": f"data:image/png;base64,{b64}"})
-                pdf.close()
-                return {"type": "pdf", "file_name": name, "pages": pages}
-            except Exception as exc:
-                print(f"[CaseHistoryService] PDF preview render failed: {exc}")
+            pages = CaseHistoryService._pdf_bytes_to_pages(raw)
+            if pages is None:
                 return {"type": "unsupported", "file_name": name, "pages": []}
+            return {"type": "pdf", "file_name": name, "pages": pages}
 
-        # Word: .docx → HTML (python-docx). The payment-pack "Word" download is really
-        # an HTML document with a .doc extension, so return its HTML as-is.
-        if "wordprocessingml" in ctype or lname.endswith(".docx"):
-            try:
-                return {"type": "html", "file_name": name, "html": CaseHistoryService._docx_to_html(raw), "pages": []}
-            except Exception as exc:
-                print(f"[CaseHistoryService] DOCX preview failed: {exc}")
-                return {"type": "unsupported", "file_name": name, "pages": []}
-        if "msword" in ctype or lname.endswith(".doc"):
+        # Office documents (Word / Excel / PowerPoint). Preferred path: convert to PDF
+        # with headless LibreOffice and render exact page-image snapshots — pixel-for-
+        # pixel the real document, same quality as the PDF preview. When LibreOffice
+        # isn't installed we fall back to a best-effort HTML rendering.
+        is_word = "wordprocessingml" in ctype or lname.endswith(".docx")
+        is_excel = "spreadsheetml" in ctype or lname.endswith((".xlsx", ".xls"))
+        is_ppt = "presentationml" in ctype or lname.endswith((".pptx", ".ppt"))
+        is_legacy_doc = "msword" in ctype or lname.endswith(".doc")
+
+        # The payment-pack "Word" download is actually an HTML document with a .doc
+        # extension — render its HTML as-is (already a designed template).
+        if is_legacy_doc:
             text = raw.decode("utf-8", "ignore")
             if "<html" in text.lower() or "<body" in text.lower():
                 return {"type": "html", "file_name": name, "html": text, "pages": []}
+
+        if is_word or is_excel or is_ppt or is_legacy_doc:
+            suffix = "." + (lname.rsplit(".", 1)[-1] if "." in lname else
+                            ("docx" if is_word else "xlsx" if is_excel else "pptx"))
+            pdf_bytes = CaseHistoryService._office_to_pdf(raw, suffix)
+            if pdf_bytes:
+                pages = CaseHistoryService._pdf_bytes_to_pages(pdf_bytes, crop=not is_excel)
+                if pages:
+                    return {"type": "pdf", "file_name": name, "pages": pages}
+            # LibreOffice unavailable / failed → HTML fallback.
+            try:
+                if is_word:
+                    return {"type": "html", "file_name": name, "html": CaseHistoryService._docx_to_html(raw), "pages": []}
+                if is_excel and lname.endswith(".xlsx"):
+                    return {"type": "html", "file_name": name, "html": CaseHistoryService._xlsx_to_html(raw), "pages": []}
+            except Exception as exc:
+                print(f"[CaseHistoryService] Office HTML fallback failed: {exc}")
             return {"type": "unsupported", "file_name": name, "pages": []}
 
         return {"type": "unsupported", "file_name": name, "pages": []}
 
     @staticmethod
+    def _soffice_bin() -> Optional[str]:
+        """Locate the headless LibreOffice binary, if installed."""
+        import os
+        import shutil
+        for cand in ("soffice", "libreoffice"):
+            found = shutil.which(cand)
+            if found:
+                return found
+        for path in (
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice",  # macOS cask
+            "/usr/bin/soffice",
+            "/usr/lib/libreoffice/program/soffice",  # nixpacks / debian
+        ):
+            if os.path.exists(path):
+                return path
+        return None
+
+    @staticmethod
+    def _office_to_pdf(raw: bytes, suffix: str) -> Optional[bytes]:
+        """Convert an Office document (docx/xlsx/pptx/…) to PDF bytes via headless
+        LibreOffice so it can be rendered as exact page-image snapshots. Returns None
+        when LibreOffice isn't installed or the conversion fails (caller falls back)."""
+        soffice = CaseHistoryService._soffice_bin()
+        if not soffice:
+            return None
+        import glob
+        import os
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, f"in{suffix}")
+            with open(src, "wb") as fh:
+                fh.write(raw)
+            profile = os.path.join(tmp, "profile")  # isolated per-call user profile
+            try:
+                subprocess.run(
+                    [soffice, "--headless", "--norestore", "--nolockcheck", "--nodefault",
+                     f"-env:UserInstallation=file://{profile}",
+                     "--convert-to", "pdf", "--outdir", tmp, src],
+                    check=True, capture_output=True, timeout=120,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[CaseHistoryService] LibreOffice convert failed: {exc}")
+                return None
+            pdfs = glob.glob(os.path.join(tmp, "*.pdf"))
+            if not pdfs:
+                return None
+            with open(pdfs[0], "rb") as fh:
+                return fh.read()
+
+    @staticmethod
+    def _pdf_bytes_to_pages(raw: bytes, crop: bool = True) -> Optional[list]:
+        """Render PDF bytes to a list of {page, image(data-uri PNG)} via PyMuPDF.
+        ``crop`` trims surrounding white margins and skips fully-blank pages (good for
+        letters/documents); pass crop=False for spreadsheets where the sheet grid /
+        page extent should be preserved. Returns None on a render error."""
+        import base64
+        import io
+        try:
+            import fitz
+            from PIL import Image, ImageChops
+        except Exception as exc:  # noqa: BLE001
+            print(f"[CaseHistoryService] PDF render deps missing: {exc}")
+            return None
+        try:
+            pdf = fitz.open(stream=raw, filetype="pdf")
+            pages = []
+            page_no = 0
+            for i in range(len(pdf)):
+                pix = pdf.load_page(i).get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+                img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                if crop:
+                    bg = Image.new("RGB", img.size, (255, 255, 255))
+                    bbox = ImageChops.difference(img, bg).getbbox()
+                    if not bbox:
+                        continue  # entirely blank page — skip
+                    pad = 12
+                    l, t, r2, b2 = bbox
+                    img = img.crop((max(0, l - pad), max(0, t - pad),
+                                    min(img.width, r2 + pad), min(img.height, b2 + pad)))
+                out = io.BytesIO()
+                img.save(out, "PNG")
+                page_no += 1
+                b64 = base64.b64encode(out.getvalue()).decode("utf-8")
+                pages.append({"page": page_no, "image": f"data:image/png;base64,{b64}"})
+            pdf.close()
+            return pages
+        except Exception as exc:  # noqa: BLE001
+            print(f"[CaseHistoryService] PDF preview render failed: {exc}")
+            return None
+
+    @staticmethod
     def _docx_to_html(data: bytes) -> str:
-        """Render a .docx as simple HTML (paragraphs + tables in document order)."""
+        """Render a .docx as HTML, preserving run formatting (bold/italic/underline),
+        paragraph alignment and tables in document order. Not a pixel-perfect Word
+        render (that needs LibreOffice) but keeps the document's structure + emphasis."""
         import io
         import html as _html
         from docx import Document
@@ -591,25 +678,79 @@ class CaseHistoryService:
         from docx.text.paragraph import Paragraph
 
         doc = Document(io.BytesIO(data))
+        align = {1: "center", 2: "right", 3: "justify"}  # WD_ALIGN_PARAGRAPH values
+
+        def render_para(p) -> str:
+            runs = []
+            for run in p.runs:
+                t = _html.escape(run.text)
+                if not t:
+                    continue
+                if run.bold:
+                    t = f"<strong>{t}</strong>"
+                if run.italic:
+                    t = f"<em>{t}</em>"
+                if run.underline:
+                    t = f"<u>{t}</u>"
+                runs.append(t)
+            inner = "".join(runs)
+            if not inner.strip():
+                return ""  # skip empty paragraphs — they only add white space
+            a = align.get(getattr(p, "alignment", None), "left")
+            return f"<p style='margin:3px 0;text-align:{a}'>{inner}</p>"
+
         parts: List[str] = []
         for child in doc.element.body.iterchildren():
             tag = child.tag.split("}")[-1]
             if tag == "p":
-                txt = Paragraph(child, doc).text.strip()
-                if txt:  # skip empty paragraphs — they only add white space
-                    parts.append(f"<p style='margin:2px 0'>{_html.escape(txt)}</p>")
+                html_p = render_para(Paragraph(child, doc))
+                if html_p:
+                    parts.append(html_p)
             elif tag == "tbl":
                 rows = []
                 for row in Table(child, doc).rows:
                     cells = "".join(
-                        f"<td style='border:1px solid #e5e7eb;padding:4px 8px;vertical-align:top'>{_html.escape(c.text.strip())}</td>"
-                        for c in row.cells
+                        "<td style='border:1px solid #d1d5db;padding:4px 8px;vertical-align:top'>"
+                        + (("".join(filter(None, [render_para(cp) for cp in cell.paragraphs]))) or "&nbsp;")
+                        + "</td>"
+                        for cell in row.cells
                     )
                     rows.append(f"<tr>{cells}</tr>")
                 parts.append(f"<table style='border-collapse:collapse;margin:10px 0;width:100%'>{''.join(rows)}</table>")
         return (
-            "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;line-height:1.6\">"
+            "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;line-height:1.5\">"
             + "".join(parts) + "</div>"
+        )
+
+    @staticmethod
+    def _xlsx_to_html(data: bytes) -> str:
+        """Render a .xlsx workbook as HTML tables (one per sheet) via openpyxl."""
+        import io
+        import html as _html
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+        parts: List[str] = []
+        for ws in wb.worksheets:
+            rows_html = []
+            for row in ws.iter_rows(values_only=True):
+                if all(c is None for c in row):
+                    continue  # skip blank rows
+                cells = "".join(
+                    "<td style='border:1px solid #d1d5db;padding:3px 7px;white-space:nowrap'>"
+                    + _html.escape("" if c is None else str(c))
+                    + "</td>"
+                    for c in row
+                )
+                rows_html.append(f"<tr>{cells}</tr>")
+            if not rows_html:
+                continue
+            parts.append(f"<div style='font-weight:600;margin:12px 0 4px'>{_html.escape(ws.title)}</div>")
+            parts.append(f"<table style='border-collapse:collapse;margin:0 0 12px'>{''.join(rows_html)}</table>")
+        wb.close()
+        return (
+            "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#111827\">"
+            + ("".join(parts) or "<p>Empty workbook.</p>") + "</div>"
         )
 
     @staticmethod
