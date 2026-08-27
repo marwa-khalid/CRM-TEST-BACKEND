@@ -113,9 +113,30 @@ def _send_email(recipients: list, subject: str, html_content: str):
 
 # ---------- CRUD ----------
 
+def _resolve_handler(db: Session, payload: Dict[str, Any], tenant_id: int) -> None:
+    """If the General Details form sent a handler *name* (any team member from the
+    same list Task Management uses), turn it into a handler_id — finding the Handler
+    by label or creating one — so the claim's handler_id FK stays valid. Removes the
+    transient ``handler_name`` key so ``Claim(**payload)`` / update stays clean."""
+    name = (payload.pop("handler_name", None) or "").strip()
+    if not name:
+        return
+    from libdata.models.tables import Handler
+    q = db.query(Handler).filter(Handler.label == name)
+    if tenant_id is not None:
+        q = q.filter((Handler.tenant_id == tenant_id) | (Handler.tenant_id.is_(None)))
+    handler = q.first()
+    if not handler:
+        handler = Handler(label=name, tenant_id=tenant_id, is_active=True)
+        db.add(handler)
+        db.flush()
+    payload["handler_id"] = handler.id
+
+
 def create_claim(db: Session, payload: Dict[str, Any], current_user_id: int, tenant_id: int) -> Claim:
     _validate_abroad(payload)
     _require_staff_if_needed(db, payload.get("source_id"), payload.get("source_staff_user_id"))
+    _resolve_handler(db, payload, tenant_id)
 
     claim = Claim(**payload)
     claim.entrant_user_id = current_user_id  # who opened the file (username shown in UI via User)
@@ -277,6 +298,7 @@ def update_claim(db: Session, claim_id: int,user_id: int,tenant_id: int, payload
     ]}, **payload}
     _validate_abroad(merged)
     _require_staff_if_needed(db, merged.get("source_id"), merged.get("source_staff_user_id"))
+    _resolve_handler(db, payload, tenant_id)
 
     changed_fields = []
     status_changed = False

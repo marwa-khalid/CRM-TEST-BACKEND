@@ -473,6 +473,7 @@ class CaseHistoryActionType(Enum):
     SEND_LETTER = "send_letter"
     SEND_EMAIL = "send_email"
     INCOMING_EMAIL = "incoming_email"
+    IMPORTED_FILE = "imported_file"
     INCOMING_CALL = "incoming_call"
     OUTGOING_CALL = "outgoing_call"
     NOTE = "note"

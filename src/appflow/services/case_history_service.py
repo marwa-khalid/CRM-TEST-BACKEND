@@ -10,7 +10,7 @@ from typing import List, Optional
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from libdata.enums import CaseHistoryActionType
+from libdata.enums import CaseHistoryActionType, PersonRoleEnum
 from libdata.models.tables import (
     CaseHistory,
     Claim,
@@ -18,12 +18,13 @@ from libdata.models.tables import (
     ClientDetail,
     Address,
     User,
+    HireVehicleProvided,
 )
 from appflow.services.microsoft_graph_token_service import MicrosoftGraphTokenService
 from appflow.services.outlook_case_activity_service import OutlookCaseActivityService
 from appflow.services.s3_service import S3Service
 from appflow.services.case_email_import import parse_email_bytes
-from appflow.utils import build_case_reference
+from appflow.utils import build_case_reference, handler_name_for_user
 
 
 def _fmt_size(num: int) -> str:
@@ -205,13 +206,17 @@ class CaseHistoryService:
         tenant_id = claim_row.tenant_id if claim_row else None
 
         # Claim scope only: auto-fill handler (General Details handler) + correspondent
-        # (the claim's third-party insurer) when the caller didn't supply them.
+        # (the claim's third-party email) when the caller didn't supply them.
         if is_claim:
             if handler is None and claim_row is not None:
                 h = getattr(claim_row, "handler", None)
                 handler = (getattr(h, "label", "") or "") or None
             if correspondent is None:
                 correspondent = CaseHistoryService._claim_tpi_correspondent(db, scope_id)
+        # Fall back to the user who performed the action when there's no handler on the
+        # claim (or for fleet records) — otherwise the row shows a bare "-".
+        if handler is None and current_user:
+            handler = handler_name_for_user(db, current_user) or None
 
         att_refs: List[dict] = []
         docs = [d for d in (documents or []) if d.get("data")]
@@ -220,7 +225,8 @@ class CaseHistoryService:
             for doc in docs:
                 name = doc.get("name") or "document"
                 blob = doc.get("data") or b""
-                key = f"history/{scope_type}/{scope_id}/docs/{uuid.uuid4().hex}_{name}"
+                # NB: the S3 IAM policy only grants access under the "claims/" prefix.
+                key = f"claims/history/{scope_type}/{scope_id}/docs/{uuid.uuid4().hex}_{name}"
                 try:
                     s3.client.put_object(
                         Bucket=s3.bucket_name,
@@ -276,14 +282,10 @@ class CaseHistoryService:
             q = q.filter(Claim.tenant_id == tenant_id)
         tpis = q.all()
 
-        client_ids = set()
-        direct_emails: List[str] = []
-        for tpi in tpis:
-            for cid in (tpi.third_party_id, tpi.third_party_insurer_id, tpi.third_party_handling_id):
-                if cid:
-                    client_ids.add(cid)
-            if (tpi.direct_email or "").strip():
-                direct_emails.append(tpi.direct_email.strip())
+        # Correspondent = the "Email Address" from each case's Third Party Details
+        # (ThirdPartyInsurer.third_party_id → Address.email) — one per case. The
+        # insurer / handling-agent / direct-email addresses are deliberately excluded.
+        client_ids = {tpi.third_party_id for tpi in tpis if tpi.third_party_id}
 
         out: List[dict] = []
         if client_ids:
@@ -301,8 +303,6 @@ class CaseHistoryService:
                 phone = (addr.mobile_tel or addr.landline_tel or addr.home_tel or "").strip() or None if addr else None
                 role = getattr(cd.role, "value", None) or (cd.role if isinstance(cd.role, str) else None) or "Third Party"
                 out.append({"role": role, "name": name, "email": email, "phone": phone})
-        for de in direct_emails:
-            out.append({"role": "Direct Email", "name": None, "email": de, "phone": None})
 
         # Only correspondents with an email, de-duplicated by email, alphabetical.
         seen, result = set(), []
@@ -314,34 +314,88 @@ class CaseHistoryService:
         return result
 
     @staticmethod
+    def _cams_vehicle_claim_id(db: Session, vehicle_record_id: int) -> Optional[int]:
+        """The claim a CAMS vehicle is on hire against — matched by registration
+        number to the claims-side hire vehicle (there's no FK link on the fleet side)."""
+        from fleet.models.tables import FleetVehicleRecord
+        rec = db.query(FleetVehicleRecord).filter(FleetVehicleRecord.id == vehicle_record_id).first()
+        reg = (getattr(rec, "registration_number", "") or "").replace(" ", "").upper()
+        if not reg:
+            return None
+        rows = (
+            db.query(HireVehicleProvided.claim_id, HireVehicleProvided.hire_vehicle_registration)
+            .filter(HireVehicleProvided.hire_vehicle_registration.isnot(None))
+            .all()
+        )
+        for claim_id, hv_reg in rows:
+            if (hv_reg or "").replace(" ", "").upper() == reg:
+                return claim_id
+        return None
+
+    @staticmethod
+    def _claim_client_email(db: Session, claim_id: int) -> Optional[str]:
+        """The claim's client (driver) email from Client Details."""
+        row = (
+            db.query(ClientDetail, Address)
+            .outerjoin(Address, Address.id == ClientDetail.address_id)
+            .filter(ClientDetail.claim_id == claim_id, ClientDetail.role == PersonRoleEnum.CLIENT)
+            .first()
+        )
+        if row:
+            _cd, addr = row
+            if addr and (addr.email or "").strip():
+                return addr.email.strip()
+        return None
+
+    @staticmethod
+    def scope_correspondents(db: Session, scope_type: str, scope_id: int) -> dict:
+        """Correspondent options for the History correspondent field, per scope.
+        Returns {"default": <email|null>, "options": [emails]}.
+        - claim: tenant-wide Third Party emails.
+        - vm_cams: the linked claim's Client email (default) + Third Party emails.
+        - vm_skyline / fleet_hire: driver email is supplied by the frontend, so [].
+        """
+        emails: List[str] = []
+        default = None
+        if scope_type == "claim":
+            emails = [c["email"] for c in CaseHistoryService.correspondents(db, scope_id) if c.get("email")]
+        elif scope_type == "vm_cams":
+            claim_id = CaseHistoryService._cams_vehicle_claim_id(db, scope_id)
+            if claim_id:
+                default = CaseHistoryService._claim_client_email(db, claim_id)
+                tps = [c["email"] for c in CaseHistoryService.correspondents(db, claim_id) if c.get("email")]
+                emails = ([default] if default else []) + tps
+        # De-dup, preserve order (default/client first).
+        seen, options = set(), []
+        for e in emails:
+            k = (e or "").lower()
+            if e and k not in seen:
+                seen.add(k)
+                options.append(e)
+        return {"default": default, "options": options}
+
+    @staticmethod
     def _claim_tpi_correspondent(db: Session, claim_id: int) -> Optional[str]:
-        """The claim's third-party insurer, as a display name — used as the
-        correspondent on payment-pack / letter records. Prefers the insurer party's
-        name, then its email, then any direct email on the TPI row."""
+        """The correspondent auto-filled on payment-pack / letter records: the
+        "Email Address" from the claim's Third Party Details
+        (ThirdPartyInsurer.third_party_id → Address.email)."""
         tpi = (
             db.query(ThirdPartyInsurer)
             .filter(ThirdPartyInsurer.claim_id == claim_id, ThirdPartyInsurer.is_deleted.isnot(True))
             .first()
         )
-        if not tpi:
+        if not tpi or not tpi.third_party_id:
             return None
-        cid = tpi.third_party_insurer_id or tpi.third_party_handling_id or tpi.third_party_id
-        if cid:
-            row = (
-                db.query(ClientDetail, Address)
-                .outerjoin(Address, Address.id == ClientDetail.address_id)
-                .filter(ClientDetail.id == cid)
-                .first()
-            )
-            if row:
-                cd, addr = row
-                name = " ".join(x for x in [cd.first_name, cd.surname] if x).strip()
-                if name:
-                    return name
-                if addr and (addr.email or "").strip():
-                    return addr.email.strip()
-        if (tpi.direct_email or "").strip():
-            return tpi.direct_email.strip()
+        row = (
+            db.query(ClientDetail, Address)
+            .outerjoin(Address, Address.id == ClientDetail.address_id)
+            .filter(ClientDetail.id == tpi.third_party_id)
+            .first()
+        )
+        if row:
+            _cd, addr = row
+            if addr and (addr.email or "").strip():
+                return addr.email.strip()
         return None
 
     @staticmethod
@@ -377,7 +431,8 @@ class CaseHistoryService:
         for att in parsed.get("attachments", []):
             name = att.get("name") or "attachment"
             blob = att.get("data") or b""
-            key = f"history/{scope_type}/{scope_id}/emails/{uuid.uuid4().hex}_{name}"
+            # NB: the S3 IAM policy only grants access under the "claims/" prefix.
+            key = f"claims/history/{scope_type}/{scope_id}/emails/{uuid.uuid4().hex}_{name}"
             try:
                 s3.client.put_object(
                     Bucket=s3.bucket_name,
@@ -479,20 +534,83 @@ class CaseHistoryService:
 
         if "pdf" in ctype or lname.endswith(".pdf"):
             try:
+                import io
                 import fitz
+                from PIL import Image, ImageChops
+
                 pdf = fitz.open(stream=raw, filetype="pdf")
                 pages = []
+                page_no = 0
                 for i in range(len(pdf)):
-                    pix = pdf.load_page(i).get_pixmap(matrix=fitz.Matrix(1.35, 1.35), alpha=False)
-                    b64 = base64.b64encode(pix.tobytes("png")).decode("utf-8")
-                    pages.append({"page": i + 1, "image": f"data:image/png;base64,{b64}"})
+                    pix = pdf.load_page(i).get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+                    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                    # Trim surrounding white margins so the preview isn't mostly blank;
+                    # a page that's entirely blank (bbox is None) is skipped.
+                    bg = Image.new("RGB", img.size, (255, 255, 255))
+                    bbox = ImageChops.difference(img, bg).getbbox()
+                    if not bbox:
+                        continue
+                    pad = 12
+                    l, t, r2, b2 = bbox
+                    img = img.crop((max(0, l - pad), max(0, t - pad),
+                                    min(img.width, r2 + pad), min(img.height, b2 + pad)))
+                    out = io.BytesIO()
+                    img.save(out, "PNG")
+                    page_no += 1
+                    b64 = base64.b64encode(out.getvalue()).decode("utf-8")
+                    pages.append({"page": page_no, "image": f"data:image/png;base64,{b64}"})
                 pdf.close()
                 return {"type": "pdf", "file_name": name, "pages": pages}
             except Exception as exc:
                 print(f"[CaseHistoryService] PDF preview render failed: {exc}")
                 return {"type": "unsupported", "file_name": name, "pages": []}
 
+        # Word: .docx → HTML (python-docx). The payment-pack "Word" download is really
+        # an HTML document with a .doc extension, so return its HTML as-is.
+        if "wordprocessingml" in ctype or lname.endswith(".docx"):
+            try:
+                return {"type": "html", "file_name": name, "html": CaseHistoryService._docx_to_html(raw), "pages": []}
+            except Exception as exc:
+                print(f"[CaseHistoryService] DOCX preview failed: {exc}")
+                return {"type": "unsupported", "file_name": name, "pages": []}
+        if "msword" in ctype or lname.endswith(".doc"):
+            text = raw.decode("utf-8", "ignore")
+            if "<html" in text.lower() or "<body" in text.lower():
+                return {"type": "html", "file_name": name, "html": text, "pages": []}
+            return {"type": "unsupported", "file_name": name, "pages": []}
+
         return {"type": "unsupported", "file_name": name, "pages": []}
+
+    @staticmethod
+    def _docx_to_html(data: bytes) -> str:
+        """Render a .docx as simple HTML (paragraphs + tables in document order)."""
+        import io
+        import html as _html
+        from docx import Document
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+
+        doc = Document(io.BytesIO(data))
+        parts: List[str] = []
+        for child in doc.element.body.iterchildren():
+            tag = child.tag.split("}")[-1]
+            if tag == "p":
+                txt = Paragraph(child, doc).text.strip()
+                if txt:  # skip empty paragraphs — they only add white space
+                    parts.append(f"<p style='margin:2px 0'>{_html.escape(txt)}</p>")
+            elif tag == "tbl":
+                rows = []
+                for row in Table(child, doc).rows:
+                    cells = "".join(
+                        f"<td style='border:1px solid #e5e7eb;padding:4px 8px;vertical-align:top'>{_html.escape(c.text.strip())}</td>"
+                        for c in row.cells
+                    )
+                    rows.append(f"<tr>{cells}</tr>")
+                parts.append(f"<table style='border-collapse:collapse;margin:10px 0;width:100%'>{''.join(rows)}</table>")
+        return (
+            "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;line-height:1.6\">"
+            + "".join(parts) + "</div>"
+        )
 
     @staticmethod
     def claim_emails(db: Session, claim_id: int) -> List[dict]:

@@ -24,6 +24,7 @@ from fleet.services import (
     vehicle_sale_service,
     vehicle_service_record_service,
 )
+from vehicles.history_log import log_vm_licensing_milestones
 
 router = APIRouter()
 
@@ -124,10 +125,14 @@ def update_authority_route(
     tenant_id: int = Depends(get_tenant_id),
     actor: int = Depends(actor_id),
 ):
-    vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
-    return licensing_authority_service.update_authority(
-        db, record_id, authority_id, payload.model_dump(exclude_unset=True), actor,
+    record = vehicle_record_service.get_vehicle_record_or_404(db, record_id, tenant_id)
+    changed = payload.model_dump(exclude_unset=True)
+    result = licensing_authority_service.update_authority(
+        db, record_id, authority_id, changed, actor,
     )
+    # Auto-log plating/MOT milestones (booked / passed / expiry) as Note records.
+    log_vm_licensing_milestones(db, record, changed.keys(), result, actor)
+    return result
 
 
 @router.delete("/vehicle-record/{record_id}/licensing-authority/{authority_id}")

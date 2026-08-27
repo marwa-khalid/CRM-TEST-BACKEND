@@ -172,6 +172,14 @@ def scope_filter_options(scope_type: str, scope_id: int, db: Session = Depends(g
     return CaseHistoryService.filter_options_for_scope(db, scope_type, scope_id)
 
 
+@case_history_router.get("/scope/{scope_type}/{scope_id}/correspondents")
+def scope_correspondents(scope_type: str, scope_id: int, db: Session = Depends(get_session)):
+    """Correspondent options for the History correspondent field: for VM-CAMS, the
+    linked claim's client email (default) + Third Party emails."""
+    _check_scope(scope_type)
+    return CaseHistoryService.scope_correspondents(db, scope_type, scope_id)
+
+
 @case_history_router.get("/scope/{scope_type}/{scope_id}/emails")
 def scope_emails(
     scope_type: str,

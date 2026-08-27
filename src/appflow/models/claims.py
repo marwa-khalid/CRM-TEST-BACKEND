@@ -9,6 +9,9 @@ class ClaimBase(BaseModel):
     # Lookup FKs (all optional; service enforces rules)
     claim_type_id: Optional[int] = None
     handler_id: Optional[int] = None
+    # Handler chosen by name (any team member); the service resolves it to a
+    # handler_id (find-or-create). Not a DB column — consumed in the service.
+    handler_name: Optional[str] = None
     target_debt_id: Optional[int] = None
     case_status_id: Optional[int] = None
 
