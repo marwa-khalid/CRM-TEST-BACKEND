@@ -162,8 +162,15 @@ class TaskService:
         page_size: int = 10,
         exclude_overdue: bool = False,
         current_user_id: Optional[int] = None,
+        exclude_modules: Optional[str] = None,
     ):
         q = TaskService._base_query(db, tenant_id)
+        # Hide other apps' tasks from this list (e.g. Claims excludes skyline / vehicles).
+        # NULL-module tasks are Claims' own and always stay.
+        if exclude_modules:
+            excluded = _split(exclude_modules)
+            if excluded:
+                q = q.filter(or_(Task.module.is_(None), Task.module.notin_(excluded)))
 
         # Tasks are user-specific: a user only sees the tasks assigned to them.
         # Assignees are stored as display strings, so match the logged-in user's
@@ -307,12 +314,17 @@ class TaskService:
         return sorted(regs)
 
     @staticmethod
-    def get_stats(db: Session, tenant_id: Optional[int] = None, current_user_id: Optional[int] = None):
+    def get_stats(db: Session, tenant_id: Optional[int] = None, current_user_id: Optional[int] = None,
+                  exclude_modules: Optional[str] = None):
         # Widgets show only the current user's tasks. Assignees are stored as
         # display strings, so match the logged-in user's email prefix to the
         # assignee after normalising (same logic as list_tasks).
+        excluded = _split(exclude_modules) if exclude_modules else []
+
         def _scoped():
             q = TaskService._base_query(db, tenant_id)
+            if excluded:
+                q = q.filter(or_(Task.module.is_(None), Task.module.notin_(excluded)))
             if current_user_id is not None:
                 me = db.query(User).filter(User.id == current_user_id).first()
                 handle = (me.user_name.split("@")[0] if me and me.user_name else "")

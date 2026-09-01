@@ -604,34 +604,115 @@ def delete_note_reply(reply_id: int, request: Request, db: Session = Depends(get
 
 @case_activity_router.post("/email/reply-with-attachments")
 async def reply_to_email_with_attachments(
-    message_id: str = Form(...),
+    message_id: str = Form(""),
     comment: str = Form(""),
+    claim_id: Optional[int] = Form(None),
+    scope_type: Optional[str] = Form(None),  # fleet scope (fleet_hire / vm_cams / vm_skyline)
+    scope_id: Optional[int] = Form(None),
+    to_email: Optional[str] = Form(None),   # fallback recipient (stored records w/o a live message id)
+    subject: Optional[str] = Form(None),    # fallback subject (stored records)
     files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_session),
 ):
-    token = get_outlook_token(db)
-    if not token:
-        raise HTTPException(status_code=400, detail="Outlook token not configured")
+    # A true Graph thread-reply needs write access to the mailbox the message lives in
+    # (the READ mailbox), which the connection doesn't have. So instead send the reply
+    # as a normal email — the SAME delivery path as the engineer-instruct email
+    # (email_delivery.send_email: Graph sendMail from the send mailbox, SendGrid
+    # fallback). Look up the original sender/subject from a live message when we have a
+    # message id; otherwise fall back to the recipient/subject passed by the caller
+    # (stored records — logged replies, imported emails — have no live message id).
+    import requests as _rq
+    from appflow.services.email_delivery import send_email as _deliver
+
+    read_token = MicrosoftGraphTokenService.get_access_token("read")
+    lookup_to, orig_subject, conversation_id = "", "", ""
+    has_live_id = bool(message_id) and message_id.strip().lower() not in {"none", "null", ""}
+    if read_token and has_live_id:
+        try:
+            resp = _rq.get(
+                f"https://graph.microsoft.com/v1.0/me/messages/{message_id}",
+                headers={"Authorization": f"Bearer {read_token}"},
+                params={"$select": "subject,from,conversationId"},
+                timeout=20,
+            )
+            if resp.ok:
+                m = resp.json()
+                lookup_to = (((m.get("from") or {}).get("emailAddress") or {}).get("address") or "").strip()
+                orig_subject = m.get("subject") or ""
+                conversation_id = m.get("conversationId") or ""
+        except Exception as exc:
+            print(f"[CaseActivity] reply lookup failed: {exc}")
+
+    recipient = lookup_to or (to_email or "").strip()
+    if not recipient:
+        raise HTTPException(status_code=502, detail="Could not determine the reply recipient (no correspondent on this record).")
+
+    subj_src = orig_subject or (subject or "")
+    to_email = recipient  # used below + in the SE log
+    subject = subj_src if subj_src.lower().startswith("re:") else f"Re: {subj_src}".strip()
+    body_html = comment if "<" in (comment or "") else (
+        f"<div style=\"font-family:Arial,sans-serif;font-size:14px;color:#111827;white-space:pre-wrap\">{comment or ''}</div>"
+    )
 
     attachments = []
     for file in files:
         content = await file.read()
         attachments.append({
-            "@odata.type": "#microsoft.graph.fileAttachment",
             "name": file.filename,
-            "contentType": file.content_type or "application/octet-stream",
-            "contentBytes": base64.b64encode(content).decode("utf-8"),
+            "content_bytes": base64.b64encode(content).decode("utf-8"),
+            "content_type": file.content_type or "application/octet-stream",
         })
 
-    success = OutlookCaseActivityService.reply_with_attachments_via_graph(
-        message_id=message_id,
-        comment=comment,
-        attachments=attachments,
-        access_token=token,
-    )
-    if not success:
-        raise HTTPException(status_code=502, detail="Graph API reply with attachments failed")
+    result = _deliver(to=to_email, subject=subject, html=body_html, attachments=attachments or None)
+    if (result or {}).get("status") != "sent":
+        raise HTTPException(status_code=502, detail=f"Could not send the reply: {(result or {}).get('detail') or 'delivery failed'}")
+
+    # Log the sent reply as a Send Email (SE) record so it appears (threaded) in
+    # History — the reply lives in the no-reply mailbox's Sent, not the read mailbox.
+    log_scope_type = scope_type or ("claim" if claim_id else None)
+    log_scope_id = scope_id if scope_id is not None else claim_id
+    if log_scope_type and log_scope_id is not None:
+        _log_sent_email(db, log_scope_type, log_scope_id, subject, to_email, body_html, attachments, conversation_id)
     return {"status": "sent"}
+
+
+def _log_sent_email(db, scope_type, scope_id, subject, to_email, body_html, attachments, conversation_id=""):
+    """Record an app-sent reply/forward as an SE Case-History record (best-effort),
+    with a thread_key so it groups with the original email. Works for any scope
+    (claim / fleet_hire / vm_cams / vm_skyline)."""
+    try:
+        from appflow.services.case_history_service import CaseHistoryService
+        from libdata.enums import CaseHistoryActionType
+        docs = [{
+            "name": a["name"],
+            "data": base64.b64decode(a["content_bytes"]),
+            "content_type": a["content_type"],
+        } for a in (attachments or [])]
+        rec = CaseHistoryService.log_document_record(
+            db, scope_id,
+            action_type=CaseHistoryActionType.SEND_EMAIL,
+            subject=subject,
+            details=subject,
+            correspondent=to_email,
+            body_html=body_html,
+            documents=docs or None,
+            source="email",
+            scope_type=scope_type, scope_id=scope_id,
+        )
+        # Stamp the conversation/thread key on the record so it groups with the thread.
+        from libdata.models.tables import CaseHistory
+        from sqlalchemy.orm.attributes import flag_modified
+        row = db.query(CaseHistory).filter(CaseHistory.id == rec.get("id")).first()
+        if row is not None:
+            payload = dict(row.payload or {})
+            payload["conversation_id"] = conversation_id or None
+            payload["thread_key"] = CaseHistoryService._thread_key(conversation_id, subject)
+            payload["to"] = [to_email]
+            row.payload = payload
+            flag_modified(row, "payload")
+            db.commit()
+    except Exception as exc:  # noqa: BLE001 — never break the send
+        print(f"[CaseActivity] log sent email failed: {exc}")
 
 
 class EmailForwardRequest(BaseModel):
@@ -652,10 +733,15 @@ async def forward_email_with_attachments(
     subject: str = Form(""),
     attachment_urls: str = Form("[]"),
     is_html: str = Form("false"),
+    claim_id: Optional[int] = Form(None),
+    scope_type: Optional[str] = Form(None),  # fleet scope (fleet_hire / vm_cams / vm_skyline)
+    scope_id: Optional[int] = Form(None),
     files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_session),
 ):
-    token = get_outlook_token(db)
+    # Forwarding sends mail → needs the SEND-scoped token (Mail.Send / Mail.ReadWrite),
+    # not the read-only token used to list emails.
+    token = MicrosoftGraphTokenService.get_access_token("send") or get_outlook_token(db)
     if not token:
         raise HTTPException(status_code=400, detail="Outlook token not configured")
 
@@ -713,31 +799,28 @@ async def forward_email_with_attachments(
         pdf_buttons_html += "</div>"
 
     final_comment = (comment or "") + pdf_buttons_html
-    is_real_message = message_id and str(message_id).lower() not in {"none", "null", ""}
     final_subject = subject or "Case Activity"
 
-    if not is_real_message:
-        success = OutlookCaseActivityService.send_email_with_attachments_via_graph(
-            to_email=to_email,
-            subject=final_subject,
-            comment=final_comment,
-            attachments=attachments,
-            access_token=token,
-            is_html=html_mode,
-        )
-    else:
-        success = OutlookCaseActivityService.forward_with_attachments_via_graph(
-            message_id=message_id,
-            to_email=to_email,
-            comment=final_comment,
-            attachments=attachments,
-            access_token=token,
-            is_html=html_mode,
-            subject=final_subject,
-        )
+    # A native Graph forward (createForward) has to run inside the mailbox the original
+    # message lives in, which this two-mailbox connection can't do. So send the forward
+    # as a normal email — the SAME delivery path as the engineer-instruct email. The
+    # user-selected files travel as attachments; stored PDFs go as buttons in the body.
+    from appflow.services.email_delivery import send_email as _deliver
 
-    if not success:
-        raise HTTPException(status_code=502, detail="Graph API forward with attachments failed")
+    body_html = final_comment if (html_mode or "<" in final_comment) else (
+        f"<div style=\"font-family:Arial,sans-serif;font-size:14px;color:#111827;white-space:pre-wrap\">{final_comment}</div>"
+    )
+    deliver_atts = [
+        {"name": a.get("name"), "content_bytes": a.get("contentBytes"), "content_type": a.get("contentType")}
+        for a in attachments
+    ]
+    result = _deliver(to=to_email, subject=final_subject, html=body_html, attachments=deliver_atts or None)
+    if (result or {}).get("status") != "sent":
+        raise HTTPException(status_code=502, detail=f"Could not forward the email: {(result or {}).get('detail') or 'delivery failed'}")
+    log_scope_type = scope_type or ("claim" if claim_id else None)
+    log_scope_id = scope_id if scope_id is not None else claim_id
+    if log_scope_type and log_scope_id is not None:
+        _log_sent_email(db, log_scope_type, log_scope_id, final_subject, to_email, body_html, deliver_atts, "")
     return {"status": "sent"}
 
 

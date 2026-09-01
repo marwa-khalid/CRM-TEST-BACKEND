@@ -35,56 +35,6 @@ def _log(
     )
 
 
-# ── PCN documents ─────────────────────────────────────────────────────────────
-# doc_type → (action, human label). A PCN Notice + the letters we send (appeal /
-# liability-transfer / council correspondence) are Send Letter (SL); a payment
-# receipt is a Note (NT). Supporting documents aren't correspondence — not logged.
-_PCN_DOC_MAP = {
-    "pcn_notice": ("SEND_LETTER", "PCN Notice"),
-    "appeal_letters": ("SEND_LETTER", "PCN Appeal Letter"),
-    "liability_transfer_letters": ("SEND_LETTER", "PCN Liability Transfer Letter"),
-    "council_correspondence": ("SEND_LETTER", "PCN Council Correspondence"),
-    "payment_receipts": ("NOTE", "PCN Payment Receipt"),
-}
-
-
-def log_pcn_document(
-    db: Session,
-    hire_id: int,
-    *,
-    doc_type: str,
-    file_name: str,
-    data: bytes,
-    content_type: Optional[str],
-    actor: Optional[int] = None,
-) -> None:
-    """Log an uploaded PCN document to the hire's History with the file previewable:
-    the Notice / appeal / liability-transfer / council letters as Send Letter (SL),
-    a payment receipt as Note (NT)."""
-    mapping = _PCN_DOC_MAP.get((doc_type or "").strip().lower())
-    if not mapping or not data:
-        return
-    try:
-        from libdata.enums import CaseHistoryActionType
-        action_name, label = mapping
-        _log(
-            db,
-            hire_id,
-            action_type=CaseHistoryActionType[action_name],
-            details=f"{label} - {file_name}",
-            subject=label,
-            actor=actor,
-            documents=[{
-                "name": file_name,
-                "data": data,
-                "content_type": content_type or "application/octet-stream",
-            }],
-            source="document",
-        )
-    except Exception as exc:  # noqa: BLE001 — never break the PCN upload
-        print(f"[Fleet history] PCN document log failed: {exc}")
-
-
 # ── PCN reminders / deadlines → Diary (DY) ────────────────────────────────────
 _PCN_REMINDER_LABELS = {
     "council_response_deadline": "Council response deadline",

@@ -31,6 +31,7 @@ def list_tasks(
     page_size: int = 10,
     all_users: bool = False,
     exclude_overdue: bool = False,
+    exclude_modules: Optional[str] = None,
     db: Session = Depends(get_session),
     tenant_id=Depends(get_tenant_id),
     current_user=Depends(actor_id),
@@ -43,16 +44,18 @@ def list_tasks(
         claim_reference, vehicle_registration, due_from, due_to, page, page_size,
         exclude_overdue=exclude_overdue,
         current_user_id=None if all_users else current_user,
+        exclude_modules=exclude_modules,
     )
 
 
 @task_router.get("/stats", response_model=TaskStatsOut)
 def task_stats(
+    exclude_modules: Optional[str] = None,
     db: Session = Depends(get_session),
     tenant_id=Depends(get_tenant_id),
     current_user=Depends(actor_id),
 ):
-    return TaskService.get_stats(db, tenant_id, current_user_id=current_user)
+    return TaskService.get_stats(db, tenant_id, current_user_id=current_user, exclude_modules=exclude_modules)
 
 
 @task_router.get("/vehicle-options")

@@ -229,11 +229,13 @@ class MicrosoftGraphTokenService:
                 "MS_GRAPH_DELEGATED_SCOPES",
             )) or "offline_access User.Read Mail.Read"
         if context == "send":
+            # Mail.ReadWrite is needed to create the reply/forward draft when there are
+            # attachments; Mail.Send to send it (and for direct threaded replies).
             return MicrosoftGraphTokenService._env_first((
                 "MS_GRAPH_SEND_DELEGATED_SCOPES",
                 "MS_GRAPH_EMAIL_DELEGATED_SCOPES",
                 "MS_GRAPH_DELEGATED_SCOPES",
-            )) or "offline_access User.Read Mail.Send"
+            )) or "offline_access User.Read Mail.ReadWrite Mail.Send"
         return os.getenv(
             "MS_GRAPH_DELEGATED_SCOPES",
             "offline_access User.Read Mail.Read Mail.Send",

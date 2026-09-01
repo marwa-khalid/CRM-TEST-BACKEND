@@ -73,15 +73,6 @@ def add_pcn_document(
     file: UploadFile,
 ) -> FleetPcnDocument:
     pcn = get_or_create_pcn(db, hire_id, tenant_id, actor_id)
-    # Snapshot the bytes before the S3 upload consumes the stream, so a PCN Notice
-    # can also be logged (with a previewable copy) to the hire's History as SL.
-    raw_bytes = b""
-    try:
-        file.file.seek(0)
-        raw_bytes = file.file.read()
-        file.file.seek(0)
-    except Exception:
-        raw_bytes = b""
     result = S3Service().upload_task_attachment_with_fallback(file)
     user_name = actor_name_for(db, actor_id)
 
@@ -106,21 +97,8 @@ def add_pcn_document(
     ))
     db.commit()
     db.refresh(doc)
-
-    # PCN correspondence is logged to the hire's History: the Notice + appeal /
-    # liability-transfer / council letters as Send Letter (SL), a payment receipt as
-    # Note (NT), each with the file previewable.
-    if raw_bytes:
-        from fleet.history_log import log_pcn_document
-        log_pcn_document(
-            db,
-            hire_id,
-            doc_type=doc_type,
-            file_name=getattr(file, "filename", None) or "PCN Document",
-            data=raw_bytes,
-            content_type=getattr(file, "content_type", None),
-            actor=actor_id,
-        )
+    # PCN documents are NOT logged to the hire's History — they live in the PCN
+    # section (Case Activity) and the Document Library only.
     return doc
 
 

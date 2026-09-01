@@ -196,7 +196,7 @@ class OutlookCaseActivityService:
         url = _mailbox_url("messages")
         params = {
             "$select": (
-                "id,subject,from,toRecipients,receivedDateTime,"
+                "id,conversationId,subject,from,toRecipients,receivedDateTime,"
                 "bodyPreview,body,hasAttachments,webLink"
             ),
             "$top": str(top),
@@ -316,7 +316,7 @@ class OutlookCaseActivityService:
         params = {
             "$search": f'"{safe_ref}"',
             "$select": (
-                "id,subject,from,toRecipients,receivedDateTime,"
+                "id,conversationId,subject,from,toRecipients,receivedDateTime,"
                 "bodyPreview,body,hasAttachments,webLink"
             ),
             "$top": "50",
@@ -536,6 +536,7 @@ class OutlookCaseActivityService:
                 meta={
                     "source_type": "outlook_email",
                     "message_id": msg.get("id") or "",
+                    "conversation_id": msg.get("conversationId") or "",
                     "web_link": outlook_web_link,
                     "has_attachments": bool(msg.get("hasAttachments")),
                     "to_recipients": to_recipients,

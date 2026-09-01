@@ -173,7 +173,202 @@ class CaseHistoryService:
         db.add(rec)
         db.commit()
         db.refresh(rec)
+        # Notify any @-mentioned users in the note (same as Case Activity tagging).
+        if rec.details and "@" in rec.details:
+            try:
+                from appflow.services.notification_service import create_mention_notifications
+                ref = ""
+                try:
+                    ref = CaseHistoryService.scope_reference(db, scope_type, scope_id) or ""
+                except Exception:
+                    ref = ""
+                create_mention_notifications(
+                    db, note_text=rec.details,
+                    claim_id=scope_id if scope_type == "claim" else None,
+                    actor_user_id=current_user, tenant_id=tenant_id, case_reference=ref,
+                )
+            except Exception as exc:  # noqa: BLE001 — never break the history save
+                print(f"[CaseHistory] mention notify failed: {exc}")
+        # A Diary (DY) entry is pushed to the assigned handler's Task Management queue.
+        if action == CaseHistoryActionType.DIARY:
+            CaseHistoryService._diary_to_task(db, rec, scope_type, scope_id, tenant_id, current_user)
+        # Send Email / Send Letter with the Accident Report Form template → attach the
+        # pre-filled PDF.
+        if (action in (CaseHistoryActionType.SEND_EMAIL, CaseHistoryActionType.SEND_LETTER)
+                and scope_type == "claim"
+                and isinstance(rec.payload, dict)
+                and (rec.payload.get("template") or "").strip().lower() == "accident report form"):
+            CaseHistoryService._attach_accident_report(db, rec, scope_id)
         return _to_dict(rec)
+
+    @staticmethod
+    def _diary_to_task(db, rec, scope_type: str, scope_id: int, tenant_id, current_user) -> None:
+        """Create a Task Management task from a Diary history entry, assigned to the
+        record's handler and due on the diary date, so it lands in that user's queue."""
+        try:
+            from appflow.models.task import TaskCreate
+            from appflow.services.task_service import TaskService
+
+            module = {"claim": "claims", "fleet_hire": "skyline",
+                      "vm_cams": "vehicles", "vm_skyline": "vehicles"}.get(scope_type, "")
+            pd = rec.payload if isinstance(rec.payload, dict) else {}
+            # The claims diary form stores the assignee + due date in the payload;
+            # fall back to the record's handler / posted date otherwise.
+            assigned = (pd.get("assigned_to") or rec.handler) or None
+            title = ((rec.subject or "").strip() or (pd.get("action") or "").strip()
+                     or (rec.details or "").strip()[:80] or "Diary reminder")
+            due = None
+            if pd.get("due_date"):
+                try:
+                    due = datetime.strptime(str(pd["due_date"])[:10], "%Y-%m-%d").date()
+                except Exception:
+                    due = None
+            if due is None:
+                due = rec.posted_at.date() if rec.posted_at else None
+            due_time = pd.get("due_time") or None
+            ref, reg = None, None
+            try:
+                ref = CaseHistoryService.scope_reference(db, scope_type, scope_id) or None
+            except Exception:
+                ref = None
+            if scope_type in ("vm_cams", "vm_skyline"):
+                reg, ref = ref, None
+            payload = TaskCreate(
+                title=title,
+                description=(rec.details or None),
+                assigned_user=assigned,
+                module=module,
+                due_date=due,
+                due_time=due_time,
+                priority="Medium",
+                status="Pending",
+                claim_id=scope_id if scope_type == "claim" else None,
+                claim_reference=ref,
+                vehicle_registration=reg,
+                notes=(rec.details or None),
+            )
+            TaskService.create_task(payload, db, current_user, tenant_id)
+        except Exception as exc:  # noqa: BLE001 — never break the history save
+            print(f"[CaseHistory] diary -> task failed: {exc}")
+
+    @staticmethod
+    def build_accident_report(db: Session, claim_id: int) -> Optional[bytes]:
+        """Fill the Accident Report Form template with the claim's data. Only the
+        existing PDF form-field VALUES are set — the template's layout, fonts and
+        design are left exactly as-is (nothing about the format changes)."""
+        try:
+            import io
+            import os
+            from pypdf import PdfReader, PdfWriter
+            from libdata.models.tables import ClientDetail, VehicleDetail, Address, LocationCondition
+            from appflow.utils import build_case_reference
+
+            tmpl = os.path.join(os.path.dirname(__file__), "..", "assets", "templates", "AccidentReportForm.pdf")
+            if not os.path.exists(tmpl):
+                print("[CaseHistory] accident report template missing")
+                return None
+
+            claim = db.query(Claim).filter(Claim.id == claim_id).first()
+            if not claim:
+                return None
+            client = (db.query(ClientDetail).filter(ClientDetail.claim_id == claim_id)
+                      .order_by(ClientDetail.id).first())
+            addr = None
+            if client and getattr(client, "address_id", None):
+                addr = db.query(Address).filter(Address.id == client.address_id).first()
+            vehicle = (db.query(VehicleDetail).filter(VehicleDetail.claim_id == claim_id)
+                       .order_by(VehicleDetail.id).first())
+            incident = (db.query(LocationCondition).filter(LocationCondition.claim_id == claim_id)
+                        .order_by(LocationCondition.id).first())
+
+            def g(o, a):
+                return getattr(o, a, None) if o else None
+
+            def dmy(d):
+                return d.strftime("%d/%m/%Y") if d else ""
+
+            name = " ".join(x for x in [g(client, "first_name"), g(client, "surname")] if x).strip()
+            make_model = " ".join(x for x in [g(vehicle, "make"), g(vehicle, "model")] if x).strip()
+            inc_date = g(incident, "date_time")
+            try:
+                ref = build_case_reference(claim_id, db)
+            except Exception:
+                ref = ""
+
+            # Field names are generic (untitled1..N); mapping is by position in the form.
+            mapped = {
+                "untitled1": ref,                                   # Claim Number
+                "untitled2": name,                                  # Full Name
+                "untitled3": g(client, "occupation") or "",         # Occupation
+                "untitled4": dmy(g(client, "date_of_birth")),       # Date of birth
+                "untitled5": g(addr, "home_tel") or "",             # Telephone (Home)
+                "untitled6": g(addr, "address") or "",              # Address
+                "untitled8": g(addr, "postcode") or "",             # Postcode
+                "untitled9": g(addr, "landline_tel") or "",         # (Business)
+                "untitled10": g(addr, "mobile_tel") or "",          # (Mobile)
+                "untitled21": make_model,                           # Make and Model
+                "untitled22": g(vehicle, "registration") or "",     # Reg No
+                "untitled24": g(vehicle, "color") or "",            # Colour
+                "untitled25": g(vehicle, "body_type") or "",        # Type of Body
+                "untitled26": g(vehicle, "engine_size") or "",      # Cubic Capacity
+                "untitled42": dmy(inc_date.date() if inc_date else None),  # Accident Date
+                "untitled44": g(incident, "location") or "",        # Accident Location
+            }
+
+            reader = PdfReader(tmpl)
+            # The supplied template ships with a completed EXAMPLE (another person's
+            # details). Clear every field first so none of that leaks onto this case's
+            # report, then fill the fields we have data for. Values only — not layout.
+            fields = {k: "" for k in (reader.get_fields() or {}).keys()}
+            for k, v in mapped.items():
+                if v:
+                    fields[k] = v
+
+            writer = PdfWriter()
+            writer.append(reader)
+            for page in writer.pages:
+                try:
+                    writer.update_page_form_field_values(page, fields, auto_regenerate=False)
+                except Exception:
+                    pass
+            try:
+                writer.set_need_appearances_writer(True)  # make viewers render filled values
+            except Exception:
+                pass
+            buf = io.BytesIO()
+            writer.write(buf)
+            return buf.getvalue()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[CaseHistory] accident report fill failed: {exc}")
+            return None
+
+    @staticmethod
+    def _attach_accident_report(db: Session, rec, claim_id: int) -> None:
+        """Generate the pre-filled Accident Report Form and attach it to a send-email
+        history record (stored in S3, surfaced as a previewable attachment)."""
+        try:
+            import uuid
+            pdf = CaseHistoryService.build_accident_report(db, claim_id)
+            if not pdf:
+                return
+            fname = "Accident Report Form.pdf"
+            att = {"name": fname, "size": _fmt_size(len(pdf))}
+            key = f"claims/history/claim/{claim_id}/docs/{uuid.uuid4().hex}_{fname}"
+            try:
+                s3 = S3Service()
+                s3.client.put_object(Bucket=s3.bucket_name, Key=key, Body=pdf,
+                                     ContentType="application/pdf")
+                att["s3_key"] = key
+            except Exception as exc:
+                print(f"[CaseHistory] accident report upload failed: {exc}")
+            payload = dict(rec.payload or {})
+            payload["attachments"] = list(payload.get("attachments") or []) + [att]
+            rec.payload = payload
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(rec, "payload")
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 — never break the history save
+            print(f"[CaseHistory] attach accident report failed: {exc}")
 
     @staticmethod
     def log_document_record(
@@ -265,12 +460,13 @@ class CaseHistoryService:
         return _to_dict(rec)
 
     @staticmethod
-    def correspondents(db: Session, claim_id: int) -> List[dict]:
+    def correspondents(db: Session, claim_id: Optional[int] = None, tenant_id: Optional[int] = None) -> List[dict]:
         """ALL third-party email addresses in the tenant (from every claim's Third
         Party Insurer screen) — each with its name + phone, for the History forms'
         Correspondent dropdown and the outgoing-call phone auto-fill. Scoped to the
-        given claim's tenant; only entries that actually have an email are returned."""
-        tenant_id = db.query(Claim.tenant_id).filter(Claim.id == claim_id).scalar()
+        given claim's tenant (or an explicit tenant_id); only entries with an email."""
+        if tenant_id is None and claim_id is not None:
+            tenant_id = db.query(Claim.tenant_id).filter(Claim.id == claim_id).scalar()
 
         # Every Third Party Insurer record in the tenant (join Claim for scoping).
         q = (
@@ -348,6 +544,18 @@ class CaseHistoryService:
         return None
 
     @staticmethod
+    def _scope_tenant_id(db: Session, scope_type: str, scope_id: int):
+        """Tenant id for a fleet scope, so tenant-wide correspondent options can load."""
+        try:
+            if scope_type == "fleet_hire":
+                from fleet.models.tables import FleetHire
+                return db.query(FleetHire.tenant_id).filter(FleetHire.id == scope_id).scalar()
+            from fleet.models.tables import FleetVehicleRecord
+            return db.query(FleetVehicleRecord.tenant_id).filter(FleetVehicleRecord.id == scope_id).scalar()
+        except Exception:
+            return None
+
+    @staticmethod
     def scope_correspondents(db: Session, scope_type: str, scope_id: int) -> dict:
         """Correspondent options for the History correspondent field, per scope.
         Returns {"default": <email|null>, "options": [emails]}.
@@ -365,6 +573,13 @@ class CaseHistoryService:
                 default = CaseHistoryService._claim_client_email(db, claim_id)
                 tps = [c["email"] for c in CaseHistoryService.correspondents(db, claim_id) if c.get("email")]
                 emails = ([default] if default else []) + tps
+            else:
+                tid = CaseHistoryService._scope_tenant_id(db, scope_type, scope_id)
+                emails = [c["email"] for c in CaseHistoryService.correspondents(db, tenant_id=tid) if c.get("email")]
+        else:  # vm_skyline / fleet_hire — driver email is the frontend default; still
+            # offer the tenant's Third Party emails so the dropdown isn't empty.
+            tid = CaseHistoryService._scope_tenant_id(db, scope_type, scope_id)
+            emails = [c["email"] for c in CaseHistoryService.correspondents(db, tenant_id=tid) if c.get("email")]
         # De-dup, preserve order (default/client first).
         seen, options = set(), []
         for e in emails:
@@ -538,12 +753,31 @@ class CaseHistoryService:
                 return {"type": "unsupported", "file_name": name, "pages": []}
             return {"type": "pdf", "file_name": name, "pages": pages}
 
-        # Office documents (Word / Excel / PowerPoint). Preferred path: convert to PDF
-        # with headless LibreOffice and render exact page-image snapshots — pixel-for-
-        # pixel the real document, same quality as the PDF preview. When LibreOffice
-        # isn't installed we fall back to a best-effort HTML rendering.
+        # Excel → an EXACT preview: render the sheet with LibreOffice (a real
+        # spreadsheet engine) to page-image snapshots, so it looks exactly like the
+        # file — no layout reconstruction. Only when LibreOffice isn't available (e.g.
+        # local dev where it isn't installed) do we fall back to an HTML grid.
+        if "spreadsheetml" in ctype or lname.endswith((".xlsx", ".xls")):
+            suffix = ".xls" if lname.endswith(".xls") and "spreadsheetml" not in ctype else ".xlsx"
+            pdf_bytes = CaseHistoryService._office_to_pdf(raw, suffix)
+            if pdf_bytes:
+                pages = CaseHistoryService._pdf_bytes_to_pages(pdf_bytes, crop=True)
+                if pages:
+                    return {"type": "pdf", "file_name": name, "pages": pages}
+            try:
+                html = (CaseHistoryService._xls_to_html(raw) if suffix == ".xls"
+                        else CaseHistoryService._xlsx_to_html(raw))
+                return {"type": "html", "file_name": name, "html": html, "pages": []}
+            except Exception as exc:
+                print(f"[CaseHistoryService] Excel preview failed: {exc}")
+                return {"type": "unsupported", "file_name": name, "pages": []}
+
+        # Office documents (Word / PowerPoint). Preferred path: convert to PDF with
+        # headless LibreOffice and render exact page-image snapshots — pixel-for-pixel
+        # the real document, same quality as the PDF preview. When LibreOffice isn't
+        # installed we fall back to a best-effort HTML rendering.
         is_word = "wordprocessingml" in ctype or lname.endswith(".docx")
-        is_excel = "spreadsheetml" in ctype or lname.endswith((".xlsx", ".xls"))
+        is_excel = False  # Excel handled above as a scrollable HTML grid
         is_ppt = "presentationml" in ctype or lname.endswith((".pptx", ".ppt"))
         is_legacy_doc = "msword" in ctype or lname.endswith(".doc")
 
@@ -724,33 +958,198 @@ class CaseHistoryService:
 
     @staticmethod
     def _xlsx_to_html(data: bytes) -> str:
-        """Render a .xlsx workbook as HTML tables (one per sheet) via openpyxl."""
+        """Render a .xlsx workbook as an Excel-style HTML grid — column letters
+        (A, B, C…) and row numbers, gridlines on every cell, cell formatting (bold /
+        italic / colour / fill / alignment / merged cells / column widths) and
+        formatted values — inside a scrollable box so it reads like the real
+        spreadsheet and scrolls both ways. Powered by openpyxl."""
         import io
         import html as _html
+        from datetime import datetime, date, time
         from openpyxl import load_workbook
+        from openpyxl.utils import get_column_letter
 
-        wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+        wb = load_workbook(io.BytesIO(data), data_only=True)
+        MAX_ROWS, MAX_COLS = 500, 60
+
+        def color_hex(c):
+            try:
+                rgb = getattr(c, "rgb", None)
+                if isinstance(rgb, str) and len(rgb) in (6, 8):
+                    return "#" + rgb[-6:]
+            except Exception:
+                pass
+            return None
+
+        def fmt_value(cell):
+            v = cell.value
+            if v is None:
+                return ""
+            if isinstance(v, datetime):
+                return v.strftime("%d/%m/%Y %H:%M") if (v.hour or v.minute) else v.strftime("%d/%m/%Y")
+            if isinstance(v, date):
+                return v.strftime("%d/%m/%Y")
+            if isinstance(v, time):
+                return v.strftime("%H:%M")
+            if isinstance(v, bool):
+                return "TRUE" if v else "FALSE"
+            if isinstance(v, (int, float)):
+                fmt = (cell.number_format or "").lower()
+                try:
+                    if "%" in fmt:
+                        return f"{v * 100:g}%"
+                    if "£" in fmt or "gbp" in fmt:
+                        return f"£{v:,.2f}"
+                    if "$" in fmt:
+                        return f"${v:,.2f}"
+                    if "," in fmt and isinstance(v, float):
+                        return f"{v:,.2f}"
+                    if "," in fmt:
+                        return f"{v:,}"
+                except Exception:
+                    pass
+                if isinstance(v, float) and v.is_integer():
+                    return str(int(v))
+                return str(v)
+            return str(v)
+
+        HDR = ("position:sticky;top:0;z-index:2;background:#f3f3f3;border:1px solid #c8c8c8;"
+               "padding:3px 6px;font-weight:600;color:#555;text-align:center")
+        RHDR = ("position:sticky;left:0;z-index:1;background:#f3f3f3;border:1px solid #c8c8c8;"
+                "padding:3px 6px;color:#777;text-align:center;font-weight:500")
+        CORNER = ("position:sticky;top:0;left:0;z-index:3;background:#e9e9e9;border:1px solid #c8c8c8")
+
         parts: List[str] = []
         for ws in wb.worksheets:
-            rows_html = []
-            for row in ws.iter_rows(values_only=True):
-                if all(c is None for c in row):
-                    continue  # skip blank rows
-                cells = "".join(
-                    "<td style='border:1px solid #d1d5db;padding:3px 7px;white-space:nowrap'>"
-                    + _html.escape("" if c is None else str(c))
-                    + "</td>"
-                    for c in row
-                )
-                rows_html.append(f"<tr>{cells}</tr>")
-            if not rows_html:
-                continue
-            parts.append(f"<div style='font-weight:600;margin:12px 0 4px'>{_html.escape(ws.title)}</div>")
-            parts.append(f"<table style='border-collapse:collapse;margin:0 0 12px'>{''.join(rows_html)}</table>")
+            max_row = min(ws.max_row or 1, MAX_ROWS)
+            max_col = min(ws.max_column or 1, MAX_COLS)
+
+            # Merged cells → colspan/rowspan on the anchor; skip the covered cells.
+            anchors, covered = {}, set()
+            for rng in ws.merged_cells.ranges:
+                anchors[(rng.min_row, rng.min_col)] = (rng.max_row - rng.min_row + 1,
+                                                       rng.max_col - rng.min_col + 1)
+                for rr in range(rng.min_row, rng.max_row + 1):
+                    for cc in range(rng.min_col, rng.max_col + 1):
+                        if (rr, cc) != (rng.min_row, rng.min_col):
+                            covered.add((rr, cc))
+
+            colgroup = ["<col style='width:42px'>"]
+            for c in range(1, max_col + 1):
+                w = None
+                try:
+                    cd = ws.column_dimensions.get(get_column_letter(c))
+                    if cd and cd.width:
+                        w = int(cd.width * 7 + 6)
+                except Exception:
+                    w = None
+                colgroup.append(f"<col style='width:{w}px'>" if w else "<col style='width:82px'>")
+
+            header = [f"<th style='{CORNER}'></th>"]
+            for c in range(1, max_col + 1):
+                header.append(f"<th style='{HDR}'>{get_column_letter(c)}</th>")
+            body_rows = [f"<tr>{''.join(header)}</tr>"]
+
+            for r in range(1, max_row + 1):
+                tds = [f"<th style='{RHDR}'>{r}</th>"]
+                for c in range(1, max_col + 1):
+                    if (r, c) in covered:
+                        continue
+                    cell = ws.cell(row=r, column=c)
+                    span = anchors.get((r, c))
+                    attrs = ""
+                    if span:
+                        if span[0] > 1:
+                            attrs += f" rowspan={span[0]}"
+                        if span[1] > 1:
+                            attrs += f" colspan={span[1]}"
+                    st = ["border:1px solid #d7d7d7", "padding:2px 6px",
+                          "white-space:nowrap", "overflow:hidden", "text-overflow:ellipsis",
+                          "max-width:360px"]
+                    f = cell.font
+                    if f is not None:
+                        if f.bold:
+                            st.append("font-weight:600")
+                        if f.italic:
+                            st.append("font-style:italic")
+                        fc = color_hex(f.color)
+                        if fc and fc.lower() not in ("#000000",):
+                            st.append(f"color:{fc}")
+                    try:
+                        if cell.fill is not None and cell.fill.patternType == "solid":
+                            bg = color_hex(cell.fill.fgColor)
+                            if bg and bg.lower() not in ("#ffffff", "#000000"):
+                                st.append(f"background:{bg}")
+                    except Exception:
+                        pass
+                    al = cell.alignment.horizontal if cell.alignment else None
+                    if al in ("center", "right", "left"):
+                        st.append(f"text-align:{al}")
+                    elif isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+                        st.append("text-align:right")
+                    tds.append(f"<td{attrs} style='{';'.join(st)}'>{_html.escape(fmt_value(cell))}</td>")
+                body_rows.append(f"<tr>{''.join(tds)}</tr>")
+
+            parts.append(f"<div style='font-weight:600;margin:10px 0 4px;color:#333'>{_html.escape(ws.title)}</div>")
+            parts.append(
+                "<table style='border-collapse:collapse;table-layout:fixed;font-size:12px;color:#1a1a1a'>"
+                f"<colgroup>{''.join(colgroup)}</colgroup>{''.join(body_rows)}</table>"
+            )
+            if (ws.max_row or 0) > MAX_ROWS or (ws.max_column or 0) > MAX_COLS:
+                parts.append("<div style='color:#999;font-size:11px;margin:4px 0 10px'>"
+                             f"Showing first {max_row} rows × {max_col} columns.</div>")
         wb.close()
+        return CaseHistoryService._grid_wrap("".join(parts) or "<p style='padding:12px'>Empty workbook.</p>")
+
+    @staticmethod
+    def _xls_to_html(data: bytes) -> str:
+        """Render a legacy .xls workbook as an Excel-style HTML grid via xlrd (values
+        only — the old binary format's styling isn't read here)."""
+        import html as _html
+        import xlrd
+
+        book = xlrd.open_workbook(file_contents=data)
+        MAX_ROWS, MAX_COLS = 500, 60
+        from openpyxl.utils import get_column_letter
+
+        HDR = ("position:sticky;top:0;z-index:2;background:#f3f3f3;border:1px solid #c8c8c8;"
+               "padding:3px 6px;font-weight:600;color:#555;text-align:center")
+        RHDR = ("position:sticky;left:0;z-index:1;background:#f3f3f3;border:1px solid #c8c8c8;"
+                "padding:3px 6px;color:#777;text-align:center;font-weight:500")
+        CORNER = ("position:sticky;top:0;left:0;z-index:3;background:#e9e9e9;border:1px solid #c8c8c8")
+
+        parts: List[str] = []
+        for sh in book.sheets():
+            nrows, ncols = min(sh.nrows, MAX_ROWS), min(sh.ncols, MAX_COLS)
+            if nrows == 0 or ncols == 0:
+                continue
+            header = [f"<th style='{CORNER}'></th>"] + [
+                f"<th style='{HDR}'>{get_column_letter(c + 1)}</th>" for c in range(ncols)]
+            body_rows = [f"<tr>{''.join(header)}</tr>"]
+            for r in range(nrows):
+                tds = [f"<th style='{RHDR}'>{r + 1}</th>"]
+                for c in range(ncols):
+                    v = sh.cell_value(r, c)
+                    if isinstance(v, float) and v.is_integer():
+                        v = int(v)
+                    align = "text-align:right" if isinstance(v, (int, float)) else "text-align:left"
+                    tds.append(
+                        f"<td style='border:1px solid #d7d7d7;padding:2px 6px;white-space:nowrap;"
+                        f"max-width:360px;overflow:hidden;text-overflow:ellipsis;{align}'>"
+                        f"{_html.escape('' if v == '' else str(v))}</td>")
+                body_rows.append(f"<tr>{''.join(tds)}</tr>")
+            parts.append(f"<div style='font-weight:600;margin:10px 0 4px;color:#333'>{_html.escape(sh.name)}</div>")
+            parts.append("<table style='border-collapse:collapse;font-size:12px;color:#1a1a1a'>"
+                         f"{''.join(body_rows)}</table>")
+        return CaseHistoryService._grid_wrap("".join(parts) or "<p style='padding:12px'>Empty workbook.</p>")
+
+    @staticmethod
+    def _grid_wrap(body: str) -> str:
+        """Wrap spreadsheet HTML in a scrollable, Excel-like framed box."""
         return (
-            "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#111827\">"
-            + ("".join(parts) or "<p>Empty workbook.</p>") + "</div>"
+            "<div style=\"font-family:Calibri,'Segoe UI',Arial,sans-serif;max-height:68vh;"
+            "overflow:auto;border:1px solid #d0d0d0;border-radius:4px;background:#fff;"
+            "padding:0 4px 8px\">" + body + "</div>"
         )
 
     @staticmethod
@@ -763,6 +1162,23 @@ class CaseHistoryService:
         return CaseHistoryService.emails_by_reference(
             db, build_case_reference(claim.id, db), scope_type="claim", scope_id=claim_id,
         )
+
+    @staticmethod
+    def _normalize_subject(subject: Optional[str]) -> str:
+        """Strip Re:/Fwd: prefixes + collapse whitespace so replies share a key."""
+        import re
+        s = re.sub(r"^(?:\s*(re|fw|fwd|aw|wg)\s*:\s*)+", "", (subject or "").strip(), flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", s).strip().lower()
+
+    @staticmethod
+    def _thread_key(conversation_id: Optional[str], subject: Optional[str]) -> str:
+        """Group emails into a thread: Outlook conversation id when present, else the
+        normalized subject (so a reply lands in the same thread as the original)."""
+        cid = (conversation_id or "").strip()
+        if cid:
+            return f"conv:{cid}"
+        norm = CaseHistoryService._normalize_subject(subject)
+        return f"subj:{norm}" if norm else ""
 
     @staticmethod
     def emails_by_reference(db: Session, reference: str, *, scope_type: str, scope_id: int) -> List[dict]:
@@ -810,15 +1226,15 @@ class CaseHistoryService:
                 {"name": a.file_name, "url": a.file_url, "size": a.file_size}
                 for a in (it.attachments or [])
             ]
-            # Sent from one of our mailboxes → Send Email (SE); otherwise it landed
-            # in the inbox from the other party → Incoming Email (IE).
-            outgoing = (it.sender_email or "").strip().lower() in ours
+            # Everything fetched from the Outlook mailbox is treated as Incoming Email
+            # (IE) — these are messages that landed in the mailbox. Outgoing (SE) records
+            # are only created when the user replies/forwards from the app.
             out.append({
                 "id": f"email:{i}",
                 "claim_id": scope_id if scope_type == "claim" else None,
                 "scope_type": scope_type,
                 "scope_id": scope_id,
-                "action_type": "send_email" if outgoing else "incoming_email",
+                "action_type": "incoming_email",
                 "posted_at": it.received_at,
                 "correspondent": _correspondent(it),
                 "handler": it.sender_name or None,
@@ -829,6 +1245,11 @@ class CaseHistoryService:
                     # Graph message id — lets the History detail pane reply/forward
                     # this email through the same Case Activity email endpoints.
                     "message_id": (it.meta or {}).get("message_id") or it.id or None,
+                    # Outlook conversation id groups messages into a thread; the frontend
+                    # groups by thread_key (conversation id, else the normalized subject).
+                    "conversation_id": (it.meta or {}).get("conversation_id") or None,
+                    "thread_key": CaseHistoryService._thread_key(
+                        (it.meta or {}).get("conversation_id"), it.subject),
                     "from_name": it.sender_name,
                     "from_email": it.sender_email,
                     "to": (it.meta or {}).get("to_recipients") or [],
