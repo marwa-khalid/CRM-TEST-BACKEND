@@ -556,38 +556,66 @@ class CaseHistoryService:
             return None
 
     @staticmethod
+    def _on_hire_drivers(db: Session, tenant_id) -> List[dict]:
+        """All drivers currently on hire (hires with an on_hire vehicle) — name + email."""
+        try:
+            from sqlalchemy import func as _func
+            from fleet.models.tables import FleetHire, FleetHireVehicle
+            hire_ids = [row[0] for row in db.query(FleetHireVehicle.hire_id)
+                        .filter(_func.lower(_func.coalesce(FleetHireVehicle.hire_status, "")) == "on_hire")
+                        .distinct().all()]
+            if not hire_ids:
+                return []
+            q = db.query(FleetHire).filter(FleetHire.id.in_(hire_ids), FleetHire.is_deleted.isnot(True))
+            if tenant_id is not None:
+                q = q.filter(FleetHire.tenant_id == tenant_id)
+            out = []
+            for h in q.all():
+                name = (getattr(h, "driver_name", "") or "").strip()
+                email = (getattr(h, "driver_email", "") or "").strip()
+                if name or email:
+                    out.append({"name": name, "email": email})
+            return out
+        except Exception as exc:  # noqa: BLE001
+            print(f"[CaseHistory] on-hire drivers failed: {exc}")
+            return []
+
+    @staticmethod
     def scope_correspondents(db: Session, scope_type: str, scope_id: int) -> dict:
         """Correspondent options for the History correspondent field, per scope.
-        Returns {"default": <email|null>, "options": [emails]}.
+        Returns {"default": <str|null>, "options": [{"label","value"}]}.
         - claim: tenant-wide Third Party emails.
         - vm_cams: the linked claim's Client email (default) + Third Party emails.
-        - vm_skyline / fleet_hire: driver email is supplied by the frontend, so [].
+        - vm_skyline / fleet_hire: every driver currently on hire (name shown, email stored).
         """
-        emails: List[str] = []
         default = None
+        options: List[dict] = []
+
+        def _email_opts(emails):
+            return [{"label": e, "value": e} for e in emails if e]
+
         if scope_type == "claim":
-            emails = [c["email"] for c in CaseHistoryService.correspondents(db, scope_id) if c.get("email")]
+            options = _email_opts([c["email"] for c in CaseHistoryService.correspondents(db, scope_id) if c.get("email")])
         elif scope_type == "vm_cams":
             claim_id = CaseHistoryService._cams_vehicle_claim_id(db, scope_id)
             if claim_id:
                 default = CaseHistoryService._claim_client_email(db, claim_id)
                 tps = [c["email"] for c in CaseHistoryService.correspondents(db, claim_id) if c.get("email")]
-                emails = ([default] if default else []) + tps
+                options = _email_opts(([default] if default else []) + tps)
             else:
                 tid = CaseHistoryService._scope_tenant_id(db, scope_type, scope_id)
-                emails = [c["email"] for c in CaseHistoryService.correspondents(db, tenant_id=tid) if c.get("email")]
-        else:  # vm_skyline / fleet_hire — driver email is the frontend default; still
-            # offer the tenant's Third Party emails so the dropdown isn't empty.
+                options = _email_opts([c["email"] for c in CaseHistoryService.correspondents(db, tenant_id=tid) if c.get("email")])
+        else:  # vm_skyline / fleet_hire — all on-hire drivers' EMAIL addresses.
             tid = CaseHistoryService._scope_tenant_id(db, scope_type, scope_id)
-            emails = [c["email"] for c in CaseHistoryService.correspondents(db, tenant_id=tid) if c.get("email")]
-        # De-dup, preserve order (default/client first).
-        seen, options = set(), []
-        for e in emails:
-            k = (e or "").lower()
-            if e and k not in seen:
+            options = _email_opts([d.get("email") for d in CaseHistoryService._on_hire_drivers(db, tid) if d.get("email")])
+        # De-dup by value, preserve order (default/client first).
+        seen, out = set(), []
+        for o in options:
+            k = (o["value"] or "").lower()
+            if o["value"] and k not in seen:
                 seen.add(k)
-                options.append(e)
-        return {"default": default, "options": options}
+                out.append(o)
+        return {"default": default, "options": out}
 
     @staticmethod
     def _claim_tpi_correspondent(db: Session, claim_id: int) -> Optional[str]:
@@ -753,23 +781,17 @@ class CaseHistoryService:
                 return {"type": "unsupported", "file_name": name, "pages": []}
             return {"type": "pdf", "file_name": name, "pages": pages}
 
-        # Excel → an EXACT preview: render the sheet with LibreOffice (a real
-        # spreadsheet engine) to page-image snapshots, so it looks exactly like the
-        # file — no layout reconstruction. Only when LibreOffice isn't available (e.g.
-        # local dev where it isn't installed) do we fall back to an HTML grid.
+        # Excel → a compact, scrollable spreadsheet grid (NOT a PDF snapshot): the
+        # sheet is rendered as an HTML grid (cells + gridlines + column letters), inside
+        # a scroll box so the viewer scrolls it like a real spreadsheet.
         if "spreadsheetml" in ctype or lname.endswith((".xlsx", ".xls")):
-            suffix = ".xls" if lname.endswith(".xls") and "spreadsheetml" not in ctype else ".xlsx"
-            pdf_bytes = CaseHistoryService._office_to_pdf(raw, suffix)
-            if pdf_bytes:
-                pages = CaseHistoryService._pdf_bytes_to_pages(pdf_bytes, crop=True)
-                if pages:
-                    return {"type": "pdf", "file_name": name, "pages": pages}
+            is_legacy_xls = lname.endswith(".xls") and "spreadsheetml" not in ctype
             try:
-                html = (CaseHistoryService._xls_to_html(raw) if suffix == ".xls"
+                html = (CaseHistoryService._xls_to_html(raw) if is_legacy_xls
                         else CaseHistoryService._xlsx_to_html(raw))
                 return {"type": "html", "file_name": name, "html": html, "pages": []}
             except Exception as exc:
-                print(f"[CaseHistoryService] Excel preview failed: {exc}")
+                print(f"[CaseHistoryService] Excel grid preview failed: {exc}")
                 return {"type": "unsupported", "file_name": name, "pages": []}
 
         # Office documents (Word / PowerPoint). Preferred path: convert to PDF with
@@ -957,29 +979,132 @@ class CaseHistoryService:
         )
 
     @staticmethod
+    def _theme_palette(wb) -> list:
+        """The 12 theme colours (as #rrggbb), ordered by the SpreadsheetML theme index
+        (0=background1, 1=text1, 2=background2, 3=text2, 4-9=accent1-6, 10=hlink,
+        11=folHlink). Parsed from the workbook's theme XML; falls back to the Office
+        default palette so theme-coloured cells/fonts still resolve when missing."""
+        import xml.etree.ElementTree as ET
+        # Office default (Excel "Office" theme) — used if the file has no theme XML.
+        default = ["FFFFFF", "000000", "E7E6E6", "44546A", "4472C4", "ED7D31",
+                   "A5A5A5", "FFC000", "5B9BD5", "70AD47", "0563C1", "954F72"]
+        raw = getattr(wb, "loaded_theme", None)
+        if not raw:
+            return ["#" + c for c in default]
+        try:
+            ns = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+            root = ET.fromstring(raw)
+            scheme = root.find(f".//{ns}clrScheme")
+            seq = []  # file order: dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink
+            for child in scheme:
+                srgb = child.find(f"{ns}srgbClr")
+                sysc = child.find(f"{ns}sysClr")
+                if srgb is not None:
+                    seq.append(srgb.get("val", "000000"))
+                elif sysc is not None:
+                    seq.append(sysc.get("lastClr", sysc.get("val", "000000")))
+                else:
+                    seq.append("000000")
+            if len(seq) >= 12:
+                # Reorder to the theme-index mapping (0/1 and 2/3 are swapped vs. file).
+                order = [seq[1], seq[0], seq[3], seq[2], seq[4], seq[5],
+                         seq[6], seq[7], seq[8], seq[9], seq[10], seq[11]]
+                return ["#" + c.lstrip("#")[-6:].upper() for c in order]
+        except Exception:
+            pass
+        return ["#" + c for c in default]
+
+    @staticmethod
+    def _apply_tint(hex_color: str, tint: float) -> str:
+        """Lighten (tint>0) / darken (tint<0) a #rrggbb colour the way Excel does."""
+        import colorsys
+        if not tint:
+            return hex_color
+        h = hex_color.lstrip("#")
+        try:
+            r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+        except Exception:
+            return hex_color
+        hh, ll, ss = colorsys.rgb_to_hls(r, g, b)
+        ll = ll * (1 + tint) if tint < 0 else ll * (1 - tint) + tint
+        ll = max(0.0, min(1.0, ll))
+        r, g, b = colorsys.hls_to_rgb(hh, ll, ss)
+        return "#%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))
+
+    @staticmethod
     def _xlsx_to_html(data: bytes) -> str:
         """Render a .xlsx workbook as an Excel-style HTML grid — column letters
-        (A, B, C…) and row numbers, gridlines on every cell, cell formatting (bold /
-        italic / colour / fill / alignment / merged cells / column widths) and
-        formatted values — inside a scrollable box so it reads like the real
+        (A, B, C…) and row numbers, real cell fills (incl. theme / indexed / dark
+        colours), per-side borders, font styling, merged cells, column widths and
+        embedded pictures — inside a scrollable box so it reads like the real
         spreadsheet and scrolls both ways. Powered by openpyxl."""
         import io
+        import base64
         import html as _html
         from datetime import datetime, date, time
         from openpyxl import load_workbook
         from openpyxl.utils import get_column_letter
+        try:
+            from openpyxl.styles.colors import COLOR_INDEX
+        except Exception:
+            COLOR_INDEX = ()
 
         wb = load_workbook(io.BytesIO(data), data_only=True)
+        theme = CaseHistoryService._theme_palette(wb)
         MAX_ROWS, MAX_COLS = 500, 60
+        ROWHDR_W, HROW_PX, DEF_COL_PX, DEF_ROW_PX = 42, 22, 82, 20
 
-        def color_hex(c):
+        def resolve_color(c):
+            """openpyxl Color → #rrggbb, honouring rgb / theme(+tint) / indexed. None
+            for auto / unset so callers can skip it."""
+            if c is None:
+                return None
             try:
-                rgb = getattr(c, "rgb", None)
-                if isinstance(rgb, str) and len(rgb) in (6, 8):
-                    return "#" + rgb[-6:]
+                ctype = getattr(c, "type", None)
+                if ctype == "rgb" or getattr(c, "rgb", None):
+                    rgb = c.rgb
+                    if isinstance(rgb, str) and len(rgb) >= 6:
+                        if len(rgb) == 8 and rgb[:2].upper() == "00":
+                            return None  # fully-transparent
+                        base = "#" + rgb[-6:].upper()
+                        return CaseHistoryService._apply_tint(base, getattr(c, "tint", 0.0) or 0.0)
+                if ctype == "theme":
+                    idx = getattr(c, "theme", None)
+                    if isinstance(idx, int) and 0 <= idx < len(theme):
+                        return CaseHistoryService._apply_tint(theme[idx], getattr(c, "tint", 0.0) or 0.0)
+                if ctype == "indexed":
+                    idx = getattr(c, "indexed", None)
+                    if isinstance(idx, int) and 0 <= idx < len(COLOR_INDEX):
+                        argb = COLOR_INDEX[idx]
+                        if isinstance(argb, str) and len(argb) >= 6:
+                            return "#" + argb[-6:].upper()
             except Exception:
                 pass
             return None
+
+        BORDER_STYLE = {
+            "thin": ("1px", "solid"), "hair": ("1px", "solid"), "medium": ("2px", "solid"),
+            "thick": ("3px", "solid"), "double": ("3px", "double"), "dotted": ("1px", "dotted"),
+            "dashed": ("1px", "dashed"), "mediumDashed": ("2px", "dashed"),
+            "dashDot": ("1px", "dashed"), "mediumDashDot": ("2px", "dashed"),
+            "dashDotDot": ("1px", "dashed"), "mediumDashDotDot": ("2px", "dashed"),
+            "slantDashDot": ("2px", "dashed"),
+        }
+
+        def side_border(side):
+            if side is None or not getattr(side, "style", None):
+                return None
+            w, s = BORDER_STYLE.get(side.style, ("1px", "solid"))
+            col = resolve_color(getattr(side, "color", None)) or "#000000"
+            return f"{w} {s} {col}"
+
+        def is_dark(hex_color):
+            try:
+                h = hex_color.lstrip("#")
+                lum = 0.299 * int(h[0:2], 16) + 0.587 * int(h[2:4], 16) + 0.114 * int(h[4:6], 16)
+                return lum < 128
+            except Exception:
+                return False
 
         def fmt_value(cell):
             v = cell.value
@@ -1013,11 +1138,59 @@ class CaseHistoryService:
                 return str(v)
             return str(v)
 
-        HDR = ("position:sticky;top:0;z-index:2;background:#f3f3f3;border:1px solid #c8c8c8;"
+        def emu_px(e):
+            return round((e or 0) / 9525)
+
+        def images_html(ws, col_px, row_px):
+            """Embedded pictures, absolutely positioned over the sheet from their
+            anchor cell. Best-effort — any image that can't be placed is skipped."""
+            out = []
+            for image in list(getattr(ws, "_images", []) or [])[:20]:
+                try:
+                    raw = None
+                    d = getattr(image, "_data", None)
+                    if callable(d):
+                        raw = d()
+                    elif isinstance(d, (bytes, bytearray)):
+                        raw = bytes(d)
+                    if raw is None and hasattr(image, "ref"):
+                        ref = image.ref
+                        if hasattr(ref, "read"):
+                            ref.seek(0); raw = ref.read()
+                        elif hasattr(ref, "save"):
+                            buf = io.BytesIO(); ref.save(buf, format="PNG"); raw = buf.getvalue()
+                    if not raw:
+                        continue
+                    ext = (getattr(image, "format", None) or "png").lower()
+                    mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+                    b64 = base64.b64encode(raw).decode("ascii")
+                    anc = image.anchor
+                    frm = getattr(anc, "_from", None)
+                    if frm is None:
+                        continue
+                    left = ROWHDR_W + sum(col_px[:frm.col]) + emu_px(getattr(frm, "colOff", 0))
+                    top = HROW_PX + sum(row_px[:frm.row]) + emu_px(getattr(frm, "rowOff", 0))
+                    to = getattr(anc, "to", None)
+                    if to is not None:
+                        w = max(8, ROWHDR_W + sum(col_px[:to.col]) + emu_px(getattr(to, "colOff", 0)) - left)
+                        h = max(8, HROW_PX + sum(row_px[:to.row]) + emu_px(getattr(to, "rowOff", 0)) - top)
+                    else:
+                        ext_o = getattr(anc, "ext", None)
+                        w = emu_px(getattr(ext_o, "cx", 0)) or emu_px(getattr(image, "width", 0)) or 96
+                        h = emu_px(getattr(ext_o, "cy", 0)) or emu_px(getattr(image, "height", 0)) or 96
+                    out.append(
+                        f"<img src='data:image/{mime};base64,{b64}' "
+                        f"style='position:absolute;left:{left}px;top:{top}px;width:{w}px;"
+                        f"height:{h}px;z-index:0;object-fit:contain'>")
+                except Exception:
+                    continue
+            return "".join(out)
+
+        HDR = ("position:sticky;top:0;z-index:4;background:#f3f3f3;border:1px solid #c8c8c8;"
                "padding:3px 6px;font-weight:600;color:#555;text-align:center")
-        RHDR = ("position:sticky;left:0;z-index:1;background:#f3f3f3;border:1px solid #c8c8c8;"
+        RHDR = ("position:sticky;left:0;z-index:3;background:#f3f3f3;border:1px solid #c8c8c8;"
                 "padding:3px 6px;color:#777;text-align:center;font-weight:500")
-        CORNER = ("position:sticky;top:0;left:0;z-index:3;background:#e9e9e9;border:1px solid #c8c8c8")
+        CORNER = ("position:sticky;top:0;left:0;z-index:5;background:#e9e9e9;border:1px solid #c8c8c8")
 
         parts: List[str] = []
         for ws in wb.worksheets:
@@ -1034,7 +1207,7 @@ class CaseHistoryService:
                         if (rr, cc) != (rng.min_row, rng.min_col):
                             covered.add((rr, cc))
 
-            colgroup = ["<col style='width:42px'>"]
+            col_px = []
             for c in range(1, max_col + 1):
                 w = None
                 try:
@@ -1043,12 +1216,25 @@ class CaseHistoryService:
                         w = int(cd.width * 7 + 6)
                 except Exception:
                     w = None
-                colgroup.append(f"<col style='width:{w}px'>" if w else "<col style='width:82px'>")
+                col_px.append(w or DEF_COL_PX)
+            row_px = []
+            for r in range(1, max_row + 1):
+                h = None
+                try:
+                    rd = ws.row_dimensions.get(r)
+                    if rd and rd.height:
+                        h = int(rd.height * 4 / 3)
+                except Exception:
+                    h = None
+                row_px.append(h or DEF_ROW_PX)
+
+            colgroup = [f"<col style='width:{ROWHDR_W}px'>"] + [
+                f"<col style='width:{w}px'>" for w in col_px]
 
             header = [f"<th style='{CORNER}'></th>"]
             for c in range(1, max_col + 1):
                 header.append(f"<th style='{HDR}'>{get_column_letter(c)}</th>")
-            body_rows = [f"<tr>{''.join(header)}</tr>"]
+            body_rows = [f"<tr style='height:{HROW_PX}px'>{''.join(header)}</tr>"]
 
             for r in range(1, max_row + 1):
                 tds = [f"<th style='{RHDR}'>{r}</th>"]
@@ -1063,37 +1249,53 @@ class CaseHistoryService:
                             attrs += f" rowspan={span[0]}"
                         if span[1] > 1:
                             attrs += f" colspan={span[1]}"
-                    st = ["border:1px solid #d7d7d7", "padding:2px 6px",
-                          "white-space:nowrap", "overflow:hidden", "text-overflow:ellipsis",
-                          "max-width:360px"]
+                    # Base faint gridline; explicit borders override each side.
+                    bt = br = bb = bl = "1px solid #e7e7e7"
+                    bd = cell.border
+                    if bd is not None:
+                        bt = side_border(bd.top) or bt
+                        br = side_border(bd.right) or br
+                        bb = side_border(bd.bottom) or bb
+                        bl = side_border(bd.left) or bl
+                    st = [f"border-top:{bt}", f"border-right:{br}", f"border-bottom:{bb}",
+                          f"border-left:{bl}", "padding:2px 6px", "white-space:nowrap",
+                          "overflow:hidden", "text-overflow:ellipsis", "max-width:360px"]
+                    bg = None
+                    try:
+                        if cell.fill is not None and cell.fill.patternType == "solid":
+                            bg = resolve_color(cell.fill.fgColor)
+                            if bg and bg.upper() != "#FFFFFF":
+                                st.append(f"background:{bg}")
+                            else:
+                                bg = None
+                    except Exception:
+                        bg = None
                     f = cell.font
+                    fc = resolve_color(getattr(f, "color", None)) if f is not None else None
                     if f is not None:
                         if f.bold:
                             st.append("font-weight:600")
                         if f.italic:
                             st.append("font-style:italic")
-                        fc = color_hex(f.color)
-                        if fc and fc.lower() not in ("#000000",):
-                            st.append(f"color:{fc}")
-                    try:
-                        if cell.fill is not None and cell.fill.patternType == "solid":
-                            bg = color_hex(cell.fill.fgColor)
-                            if bg and bg.lower() not in ("#ffffff", "#000000"):
-                                st.append(f"background:{bg}")
-                    except Exception:
-                        pass
+                    if fc:
+                        st.append(f"color:{fc}")
+                    elif bg and is_dark(bg):
+                        st.append("color:#ffffff")  # keep text legible on dark fills
                     al = cell.alignment.horizontal if cell.alignment else None
                     if al in ("center", "right", "left"):
                         st.append(f"text-align:{al}")
                     elif isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
                         st.append("text-align:right")
                     tds.append(f"<td{attrs} style='{';'.join(st)}'>{_html.escape(fmt_value(cell))}</td>")
-                body_rows.append(f"<tr>{''.join(tds)}</tr>")
+                body_rows.append(f"<tr style='height:{row_px[r - 1]}px'>{''.join(tds)}</tr>")
 
+            imgs = images_html(ws, col_px, row_px)
             parts.append(f"<div style='font-weight:600;margin:10px 0 4px;color:#333'>{_html.escape(ws.title)}</div>")
             parts.append(
+                "<div style='position:relative;display:inline-block'>"
                 "<table style='border-collapse:collapse;table-layout:fixed;font-size:12px;color:#1a1a1a'>"
                 f"<colgroup>{''.join(colgroup)}</colgroup>{''.join(body_rows)}</table>"
+                + imgs + "</div>"
             )
             if (ws.max_row or 0) > MAX_ROWS or (ws.max_column or 0) > MAX_COLS:
                 parts.append("<div style='color:#999;font-size:11px;margin:4px 0 10px'>"
@@ -1145,11 +1347,14 @@ class CaseHistoryService:
 
     @staticmethod
     def _grid_wrap(body: str) -> str:
-        """Wrap spreadsheet HTML in a scrollable, Excel-like framed box."""
+        """Wrap spreadsheet HTML in a scrollable, Excel-like framed box. The
+        ``scrollbar-hide`` class (defined in the app's global CSS) + scrollbar-width
+        keep the scrollbar invisible while it still scrolls."""
         return (
-            "<div style=\"font-family:Calibri,'Segoe UI',Arial,sans-serif;max-height:68vh;"
-            "overflow:auto;border:1px solid #d0d0d0;border-radius:4px;background:#fff;"
-            "padding:0 4px 8px\">" + body + "</div>"
+            "<div class=\"scrollbar-hide\" style=\"font-family:Calibri,'Segoe UI',Arial,"
+            "sans-serif;max-height:68vh;overflow:auto;scrollbar-width:none;"
+            "-ms-overflow-style:none;border:1px solid #d0d0d0;border-radius:4px;"
+            "background:#fff;padding:0 4px 8px\">" + body + "</div>"
         )
 
     @staticmethod

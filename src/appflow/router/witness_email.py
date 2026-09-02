@@ -18,7 +18,8 @@ from weasyprint import HTML
 from dotenv import load_dotenv
 from appflow.models.witness import WitnessEmailRequest, QuestionnaireSubmitRequest, UpdateQuestionnaireStatusRequest
 from libdata.models.tables import Questionnaire, ClaimQuestionnaire
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
+import secrets
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, TrackingSettings, ClickTracking,ContentId
 from pathlib import Path
@@ -1114,6 +1115,8 @@ async def save_questionnaire_by_link(
                     "witness_name": witness_name,
                     "document_role": "witness_questionnaire_pdf",
                     "preview_type": "pdf",
+                    # Unguessable token guarding the permanent view link below.
+                    "view_token": secrets.token_urlsafe(16),
                 },
             )
 
@@ -1121,16 +1124,14 @@ async def save_questionnaire_by_link(
             db.flush()
             db.refresh(case_document)
 
-            # Generate presigned URL; fall back to default link on failure
+            # Permanent, token-guarded view link. A raw presigned URL expires after
+            # S3's 7-day maximum, so links in older emails 403 ("Access Denied").
+            # This endpoint mints a fresh presigned URL on every click instead.
             if pdf_upload.get("s3_key"):
-                try:
-                    view_link = s3_service.generate_presigned_url(
-                        s3_key=pdf_upload["s3_key"],
-                        expires_in=7 * 24 * 3600,
-                    )
-                    print("PRESIGNED VIEW LINK:", view_link)
-                except Exception as exc:
-                    print("Failed to generate presigned URL, using fallback:", exc)
+                base = (os.getenv("PUBLIC_BACKEND_URL") or str(request.base_url)).rstrip("/")
+                token = (case_document.metadata_json or {}).get("view_token", "")
+                view_link = f"{base}/witnesses/document/{case_document.id}/view?t={token}"
+                print("DURABLE VIEW LINK:", view_link)
             else:
                 print("S3 upload returned no s3_key, using fallback link")
 
@@ -1332,6 +1333,24 @@ async def save_questionnaire_by_link(
         "pdf_url": view_link,
         "case_document_id": case_document.id if case_document else None,
     }
+
+@email_router.get("/document/{doc_id}/view")
+def view_witness_document(doc_id: int, t: str = "", db: Session = Depends(get_session)):
+    """Permanent view link for a witness-questionnaire PDF: verify the per-document
+    token, then 302-redirect to a freshly minted presigned S3 URL. Unlike a raw
+    presigned link (max 7 days) embedded in an email, this never expires."""
+    doc = db.query(CaseDocument).filter(CaseDocument.id == doc_id).first()
+    if not doc or not doc.s3_key:
+        raise HTTPException(status_code=404, detail="Document not found")
+    token = (doc.metadata_json or {}).get("view_token")
+    if not token or t != token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+    try:
+        url = S3Service().generate_presigned_url(s3_key=doc.s3_key, expires_in=3600)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to generate link: {exc}")
+    return RedirectResponse(url, status_code=302)
+
 
 @email_router.get("/get/{claim_questionnaire_id}")
 def get_claim_questionnaire(

@@ -360,7 +360,7 @@ class OutlookCaseActivityService:
             scan_url = _mailbox_url("messages")
             scan_params = {
                 "$select": (
-                    "id,subject,from,toRecipients,receivedDateTime,"
+                    "id,conversationId,subject,from,toRecipients,receivedDateTime,"
                     "bodyPreview,body,hasAttachments,webLink"
                 ),
                 "$top": "100",
