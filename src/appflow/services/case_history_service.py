@@ -781,11 +781,22 @@ class CaseHistoryService:
                 return {"type": "unsupported", "file_name": name, "pages": []}
             return {"type": "pdf", "file_name": name, "pages": pages}
 
-        # Excel → a compact, scrollable spreadsheet grid (NOT a PDF snapshot): the
-        # sheet is rendered as an HTML grid (cells + gridlines + column letters), inside
-        # a scroll box so the viewer scrolls it like a real spreadsheet.
+        # Excel → an exact snapshot of the real sheet (borders, fills, merged cells,
+        # images, layout) via headless LibreOffice. SinglePageSheets puts each sheet on
+        # ONE page so the sheet isn't chopped across pages; pages render to images and
+        # scroll in the preview box. Falls back to the openpyxl HTML grid if LibreOffice
+        # isn't available.
         if "spreadsheetml" in ctype or lname.endswith((".xlsx", ".xls")):
             is_legacy_xls = lname.endswith(".xls") and "spreadsheetml" not in ctype
+            suffix = ".xls" if is_legacy_xls else ".xlsx"
+            pdf_bytes = CaseHistoryService._office_to_pdf(
+                raw, suffix,
+                convert_to='pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"}}',
+            )
+            if pdf_bytes:
+                pages = CaseHistoryService._pdf_bytes_to_pages(pdf_bytes, crop=True)
+                if pages:
+                    return {"type": "pdf", "file_name": name, "pages": pages}
             try:
                 html = (CaseHistoryService._xls_to_html(raw) if is_legacy_xls
                         else CaseHistoryService._xlsx_to_html(raw))
@@ -849,10 +860,12 @@ class CaseHistoryService:
         return None
 
     @staticmethod
-    def _office_to_pdf(raw: bytes, suffix: str) -> Optional[bytes]:
+    def _office_to_pdf(raw: bytes, suffix: str, convert_to: str = "pdf") -> Optional[bytes]:
         """Convert an Office document (docx/xlsx/pptx/…) to PDF bytes via headless
-        LibreOffice so it can be rendered as exact page-image snapshots. Returns None
-        when LibreOffice isn't installed or the conversion fails (caller falls back)."""
+        LibreOffice so it can be rendered as exact page-image snapshots. ``convert_to``
+        lets the caller pass a filtered target (e.g. the Calc export with
+        SinglePageSheets so each sheet lands on ONE page). Returns None when
+        LibreOffice isn't installed or the conversion fails (caller falls back)."""
         soffice = CaseHistoryService._soffice_bin()
         if not soffice:
             return None
@@ -869,7 +882,7 @@ class CaseHistoryService:
                 subprocess.run(
                     [soffice, "--headless", "--norestore", "--nolockcheck", "--nodefault",
                      f"-env:UserInstallation=file://{profile}",
-                     "--convert-to", "pdf", "--outdir", tmp, src],
+                     "--convert-to", convert_to, "--outdir", tmp, src],
                     check=True, capture_output=True, timeout=120,
                 )
             except Exception as exc:  # noqa: BLE001

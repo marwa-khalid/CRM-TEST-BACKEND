@@ -325,3 +325,67 @@ def create_case_history_record(
         return CaseHistoryService.create(db, claim_id, payload, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ── History notes (threaded comments + @-mentions), shared with fleet / VM ────
+# Fleet-hire and Vehicle-Management records aren't claims, so their notes are
+# stored with claim_id NULL, keyed only by activity_ref. Fetch / reply / edit /
+# delete reuse the generic Case Activity note endpoints (they work by ref / id);
+# only creation needs this scope-aware endpoint (to set the tenant for @mentions).
+
+@case_history_router.get("/notes/{activity_ref}")
+def scope_notes(activity_ref: str, db: Session = Depends(get_session)):
+    """Notes (+ replies) for a history record, keyed by activity_ref — same shape
+    as the claim-side notes so all three history screens render the identical UI."""
+    from appflow.router.case_activity import get_activity_notes
+    return get_activity_notes(activity_ref, db)
+
+
+@case_history_router.post("/notes/{scope_type}/{scope_id}")
+async def create_scope_note(
+    scope_type: str,
+    scope_id: int,
+    note: str = Form(""),
+    activity_ref: str = Form(""),
+    db: Session = Depends(get_session),
+    current_user: Optional[int] = Depends(actor_id),
+):
+    """Add a note to a fleet-hire / VM history record (claim_id NULL). @mentions
+    notify within the record's tenant, exactly like the claim-side notes."""
+    from datetime import datetime
+    from libdata.models.tables import CaseNote
+    from appflow.router.case_activity import _user_display
+
+    rec = CaseNote(
+        claim_id=None,
+        activity_ref=str(activity_ref),
+        note=note or "",
+        created_by=current_user,
+        created_at=datetime.utcnow(),
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+
+    try:
+        from appflow.services.notification_service import create_mention_notifications
+        tenant_id = CaseHistoryService._scope_tenant_id(db, scope_type, scope_id)
+        create_mention_notifications(
+            db, note_text=note, claim_id=None,
+            actor_user_id=current_user, tenant_id=tenant_id,
+        )
+    except Exception:
+        db.rollback()
+
+    user = _user_display(db, current_user)
+    return {
+        "id": rec.id,
+        "activityId": activity_ref,
+        "text": note or "",
+        "attachments": [],
+        "createdAt": rec.created_at,
+        "createdById": current_user,
+        "createdByName": user["name"],
+        "createdByRole": user["role"],
+        "replies": [],
+    }

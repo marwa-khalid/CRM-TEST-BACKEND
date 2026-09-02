@@ -111,7 +111,8 @@ class CaseNote(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    claim_id = Column(Integer, ForeignKey("claims.id"), nullable=False)
+    # Nullable: fleet-hire / VM history notes aren't tied to a claim (keyed by activity_ref).
+    claim_id = Column(Integer, ForeignKey("claims.id"), nullable=True)
 
     history_activity_id = Column(
         Integer,
