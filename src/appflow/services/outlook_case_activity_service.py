@@ -446,6 +446,42 @@ class OutlookCaseActivityService:
             print(f"[OutlookCaseActivityService] Attachment fetch failed: {exc}")
             return []
 
+    @staticmethod
+    def inline_cid_images(message_id: str, body_html: str, access_token: str) -> str:
+        """Replace inline cid: image references (Outlook signature logos / social
+        icons, which the browser can't load and our sanitizer strips) with data:
+        URIs, so the email renders exactly as it looks in Outlook. These inline
+        images live as attachments even when hasAttachments is False. Best-effort —
+        returns the body unchanged on any error."""
+        import re as _re
+        if not message_id or not body_html or "cid:" not in body_html.lower():
+            return body_html
+        try:
+            # No $select — contentBytes (a fileAttachment property) is dropped by a
+            # $select on the mixed attachment collection.
+            resp = requests.get(
+                _mailbox_url(f"messages/{message_id}/attachments"),
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            for att in resp.json().get("value", []):
+                cid = (att.get("contentId") or "").strip("<>").strip()
+                content_bytes = att.get("contentBytes")
+                if not cid or not content_bytes:
+                    continue
+                data_uri = f"data:{att.get('contentType') or 'image/png'};base64,{content_bytes}"
+                body_html = _re.sub(
+                    r"cid:" + _re.escape(cid),
+                    lambda _m: data_uri,
+                    body_html,
+                    flags=_re.IGNORECASE,
+                )
+            return body_html
+        except Exception as exc:  # noqa: BLE001
+            print(f"[OutlookCaseActivityService] inline cid images failed: {exc}")
+            return body_html
+
     # ------------------------------------------------------------------
     # Mapping: Graph message → CaseActivityItemOut
     # ------------------------------------------------------------------

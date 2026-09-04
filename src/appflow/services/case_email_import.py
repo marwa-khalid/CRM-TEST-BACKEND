@@ -1,8 +1,10 @@
 """Parse a dragged-in email file (.eml via the stdlib, .msg via extract-msg)
 into a normalised dict for the Case History import."""
+import base64
 import email
 import email.policy
 import os
+import re
 import tempfile
 from datetime import datetime
 from email.utils import parseaddr, parsedate_to_datetime
@@ -32,12 +34,24 @@ def _parse_eml(data: bytes) -> dict:
 
     body_text, body_html = "", ""
     attachments: List[dict] = []
+    cid_map: dict = {}  # content-id -> data: URI (inline signature images)
     for part in msg.walk():
         if part.is_multipart():
             continue
         disposition = (part.get_content_disposition() or "").lower()
         ctype = part.get_content_type()
         filename = part.get_filename()
+        cid = (part.get("Content-ID") or "").strip().strip("<>").strip()
+        # Inline images (Outlook signature logo / social icons) — bundle them into
+        # the body as data: URIs instead of listing them as attachments, so the
+        # signature renders exactly like the original email.
+        is_inline_img = ctype.startswith("image/") and (bool(cid) or disposition == "inline")
+        if is_inline_img:
+            if cid:
+                payload = part.get_payload(decode=True) or b""
+                if payload:
+                    cid_map[cid] = f"data:{ctype};base64,{base64.b64encode(payload).decode('ascii')}"
+            continue
         if disposition == "attachment" or filename:
             payload = part.get_payload(decode=True) or b""
             attachments.append({
@@ -55,6 +69,11 @@ def _parse_eml(data: bytes) -> dict:
                 body_html = part.get_content()
             except Exception:
                 body_html = ""
+
+    # Swap each cid: reference in the HTML for its inlined data: URI.
+    if body_html and cid_map:
+        for _cid, _uri in cid_map.items():
+            body_html = re.sub(r"cid:" + re.escape(_cid), lambda _m: _uri, body_html, flags=re.IGNORECASE)
 
     return {
         "subject": msg.get("subject") or "",

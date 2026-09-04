@@ -1444,6 +1444,12 @@ class CaseHistoryService:
                 {"name": a.file_name, "url": a.file_url, "size": a.file_size}
                 for a in (it.attachments or [])
             ]
+            # Inline the email's cid: signature images (logo / social icons) as data
+            # URIs so it renders exactly like Outlook, instead of dropping the images.
+            body_html = it.body_html
+            _mid = (it.meta or {}).get("message_id") or it.id
+            if body_html and "cid:" in body_html.lower() and _mid:
+                body_html = OutlookCaseActivityService.inline_cid_images(_mid, body_html, token)
             # Everything fetched from the Outlook mailbox is treated as Incoming Email
             # (IE) — these are messages that landed in the mailbox. Outgoing (SE) records
             # are only created when the user replies/forwards from the app.
@@ -1471,7 +1477,7 @@ class CaseHistoryService:
                     "from_name": it.sender_name,
                     "from_email": it.sender_email,
                     "to": (it.meta or {}).get("to_recipients") or [],
-                    "body_html": it.body_html,
+                    "body_html": body_html,
                     "body_text": it.body_text,
                     "attachments": attachments,
                 },
